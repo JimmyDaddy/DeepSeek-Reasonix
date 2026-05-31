@@ -724,18 +724,25 @@ func (m chatTUI) View() tea.View {
 	default:
 		status = "  " + modeTag + " · " + i18n.M.ChatStatusIdle
 	}
+	// Second status row: the live data (context gauge, cache rates, jobs,
+	// balance). It lives on its own fixed row so it's always shown in full rather
+	// than being truncated off the end of the keybinding hints on line 1. Two
+	// rows is a fixed height, so unlike a wrap-when-long status it doesn't
+	// reintroduce resize ghosting.
+	var data []string
 	if ctxTag != "" {
-		status += " · " + ctxTag
+		data = append(data, ctxTag)
 	}
 	if cache := m.cacheTag(); cache != "" {
-		status += " · " + cache
+		data = append(data, cache)
 	}
 	if jt := m.jobsTag(); jt != "" {
-		status += " · " + jt
+		data = append(data, jt)
 	}
 	if m.balance != "" {
-		status += " · " + dim(m.balance)
+		data = append(data, dim(m.balance))
 	}
+	dataLine := "  " + strings.Join(data, " · ")
 
 	// The bottom region must stay a stable height: bubbletea's non-alt-screen
 	// renderer commits scrollback via tea.Println by clearing the previous
@@ -771,9 +778,12 @@ func (m chatTUI) View() tea.View {
 		// Zero-width space at the front (survives clampStatusLine, which only trims
 		// the tail) so a post-resize repaint produces a byte-different View and
 		// isn't skipped by the renderer. Invisible: width 0, no glyph.
-		status = "​" + status
+		dataLine = "​" + dataLine
 	}
-	parts = append(parts, box, statusStyle.Render(clampStatusLine(status, boxW)))
+	// Fixed two-row status: line 1 = mode + keybinding/state hints, line 2 = live
+	// data. Each row is clamped to width independently so neither wraps.
+	statusBlock := clampStatusLine(status, boxW) + "\n" + clampStatusLine(dataLine, boxW)
+	parts = append(parts, box, statusStyle.Render(statusBlock))
 
 	v := tea.NewView(strings.Join(parts, "\n"))
 	// Anchor the real terminal cursor at the textarea's insertion point so IME
