@@ -318,6 +318,15 @@ export const EN: TranslationSchema = {
       description: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
       argsHint: "[reload]",
     },
+    slash: {
+      description:
+        "list custom slash commands (skills + settings.json) · reload re-reads from disk",
+      argsHint: "[list|reload]",
+    },
+    agents: {
+      description: "list / inspect / create / run agents (.reasonix/agents/ + .claude/agents/)",
+      argsHint: "[list|show <name>|new <name>|run <name> [args]]",
+    },
     permissions: {
       description:
         "show / edit shell allowlist (builtin read-only · per-project: ~/.reasonix/config.json)",
@@ -1021,6 +1030,17 @@ export const EN: TranslationSchema = {
       hooksReloadUnavailable:
         "/hooks reload is not available in this context (no reload callback wired).",
       hooksReloaded: "▸ reloaded hooks · {count} active",
+      slashReloadUnavailable:
+        "/slash reload is not available in this context (no reload callback wired).",
+      slashReloaded: "▸ reloaded custom slash commands · {count} active",
+      slashUsage:
+        "usage: /slash             list custom slash commands\n       /slash reload      re-read skills + settings.json",
+      slashNone: "no custom slash commands configured.",
+      slashHeader: "▸ custom slash commands · {count} active:",
+      slashFooter: "sources: project/.reasonix/settings.json · ~/.reasonix/settings.json · skills",
+      customExecOk: "▸ /{name} — command completed (no output)",
+      customExecFailed: "▸ /{name} failed: {reason}",
+      customNoCommand: "usage: /<name> [args] — runs the custom command defined in settings.json",
       hooksUsage:
         "usage: /hooks            list active hooks\n       /hooks reload     re-read settings.json files",
       hooksNone: "no hooks configured.",

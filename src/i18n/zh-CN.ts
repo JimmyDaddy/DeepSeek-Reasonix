@@ -306,6 +306,14 @@ export const zhCN: TranslationSchema = {
       description: "列出活跃的 hooks（.reasonix/ 下的 settings.json）· reload 从磁盘重新读取",
       argsHint: "[reload]",
     },
+    slash: {
+      description: "列出自定义 slash 命令（skills + settings.json）· reload 从磁盘重新读取",
+      argsHint: "[list|reload]",
+    },
+    agents: {
+      description: "列出 / 查看 agents（.reasonix/agents/ + .claude/agents/）",
+      argsHint: "[list|show <name>]",
+    },
     permissions: {
       description: "显示 / 编辑 shell 允许列表（内置只读 · 项目级：~/.reasonix/config.json）",
       argsHint: "[list|add <prefix>|remove <prefix|N>|clear confirm]",

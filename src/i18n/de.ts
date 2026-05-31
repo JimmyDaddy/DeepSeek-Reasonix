@@ -241,6 +241,12 @@ export const de: TranslationSchema = {
       description:
         "Aktive Hooks auflisten (settings.json unter .reasonix/) · reload liest von Platte neu",
     },
+    slash: {
+      ...EN.slash.slash,
+      description:
+        "Benutzerdefinierte Slash-Befehle auflisten (Skills + settings.json) · reload liest von Platte neu",
+      argsHint: "[Liste|Neu laden]",
+    },
     permissions: {
       ...EN.slash.permissions,
       argsHint:

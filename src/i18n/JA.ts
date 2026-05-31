@@ -353,6 +353,12 @@ export const JA: TranslationSchema = {
         "アクティブなフックを一覧 (.reasonix/ 下の settings.json) · reload でディスクから再読込",
       argsHint: "[reload]",
     },
+    slash: {
+      ...EN.slash.slash,
+      description:
+        "カスタムスラッシュコマンドを一覧 (skills + settings.json) · reload でディスクから再読込",
+      argsHint: "[list|reload]",
+    },
     permissions: {
       ...EN.slash.permissions,
       description:

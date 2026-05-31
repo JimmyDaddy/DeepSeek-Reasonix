@@ -224,6 +224,12 @@ export const ru: TranslationSchema = {
       description:
         "список активных хуков (settings.json в .reasonix/) · reload перечитывает с диска",
     },
+    slash: {
+      ...EN.slash.slash,
+      description:
+        "список пользовательских slash-команд (скиллы + settings.json) · reload перечитывает с диска",
+      argsHint: "[list|reload]",
+    },
     permissions: {
       ...EN.slash.permissions,
       description:
