@@ -1,9 +1,12 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { wrapToCells } from "@/cli/ui/text-width.js";
 import { t, tObj } from "@/i18n/index.js";
 import { VERSION } from "@/version.js";
 import { formatDuration, formatLoopStatus, parseLoopCommand } from "../../loop.js";
 import { SLASH_COMMANDS, SLASH_GROUP_ORDER, orderSlashCommandsByGroup } from "../commands.js";
 import type { SlashHandler } from "../dispatch.js";
+import { loadMarkdownAgents } from "../md-commands.js";
 import type { SlashCommandSpec, SlashGroup } from "../types.js";
 
 const ABOUT_WEBSITE = "https://esengine.github.io/DeepSeek-Reasonix/";
@@ -162,6 +165,120 @@ const about: SlashHandler = () => {
   return { info: lines.join("\n") };
 };
 
+const slashCmd: SlashHandler = (args, _loop, ctx) => {
+  const sub = (args[0] ?? "").toLowerCase();
+
+  if (sub === "reload") {
+    if (!ctx.reloadExtraHandlers) {
+      return { info: t("handlers.admin.slashReloadUnavailable") };
+    }
+    const count = ctx.reloadExtraHandlers();
+    return { info: t("handlers.admin.slashReloaded", { count }) };
+  }
+
+  // list (default)
+  const extraKeys = ctx.extraHandlers ? Object.keys(ctx.extraHandlers) : [];
+  if (extraKeys.length === 0) {
+    return { info: t("handlers.admin.slashNone") };
+  }
+  const lines = [t("handlers.admin.slashHeader", { count: extraKeys.length })];
+  for (const name of extraKeys.sort()) {
+    lines.push(`  /${name}`);
+  }
+  lines.push("");
+  lines.push(t("handlers.admin.slashFooter"));
+  return { info: lines.join("\n") };
+};
+
+const agents: SlashHandler = (args, _loop, ctx) => {
+  const projectRoot = ctx.codeRoot;
+  const dirs = (root: string) => [
+    join(root, ".reasonix", "agents"),
+    join(root, ".claude", "agents"),
+  ];
+
+  const sub = (args[0] ?? "").toLowerCase();
+
+  // /agents new <name>
+  if (sub === "new" || sub === "init") {
+    const name = args[1];
+    if (!name) return { info: "usage: /agents new <name>" };
+    if (!projectRoot)
+      return { info: "agent creation requires a project root (run from reasonix code)." };
+    const targetDir = join(projectRoot, ".reasonix", "agents");
+    try {
+      mkdirSync(targetDir, { recursive: true });
+    } catch {
+      return { info: `cannot create directory: ${targetDir}` };
+    }
+    const filePath = join(targetDir, `${name}.md`);
+    if (existsSync(filePath)) return { info: `agent "${name}" already exists at ${filePath}` };
+    const stub = `---
+name: ${name}
+description: What does this agent do?
+tools: read_file, search_content, glob
+---
+
+# ${name}
+
+Replace this body with the agent's system prompt.
+The agent runs as an isolated subagent (subagent mode).
+`;
+    writeFileSync(filePath, stub, "utf8");
+    return {
+      info: `▸ agent "${name}" created at ${filePath}\n  edit it, then /slash reload to pick it up.`,
+    };
+  }
+
+  // /agents run <name> [args]
+  if (sub === "run") {
+    const name = args[1];
+    if (!name) return { info: "usage: /agents run <name> [args]" };
+    if (!projectRoot) return { info: "agent invocation requires a project root." };
+    const all = loadMarkdownAgents(dirs(projectRoot), "agents");
+    const found = all.find((a) => a.name === name);
+    if (!found) return { info: `agent "${name}" not found.` };
+    const extraArgs = args.slice(2).join(" ").trim();
+    const body = extraArgs ? found.body.replace(/\$ARGUMENTS/g, extraArgs) : found.body;
+    return {
+      info: `▸ running agent "${name}"${extraArgs ? ` — ${extraArgs}` : ""}`,
+      resubmit: `# Agent: ${found.name}${found.description ? `\n> ${found.description}` : ""}\n\n${body}`,
+    };
+  }
+
+  // /agents show <name>
+  if (sub === "show" || sub === "cat") {
+    const target = args[1];
+    if (!target) return { info: "usage: /agents show <name>" };
+    if (!projectRoot) return { info: "agent inspection requires a project root." };
+    const all = loadMarkdownAgents(dirs(projectRoot), "agents");
+    const found = all.find((a) => a.name === target);
+    if (!found) return { info: `agent "${target}" not found.` };
+    const lines = [
+      `▸ ${found.name}  (${found.source})`,
+      found.description ? `  ${found.description}` : "",
+      found.tools ? `  tools: ${found.tools}` : "",
+      found.model ? `  model: ${found.model}` : "",
+      "",
+      found.body,
+    ].filter((l) => l !== "");
+    return { info: lines.join("\n") };
+  }
+
+  // /agents list (default)
+  if (!projectRoot) return { info: "agent listing requires a project root." };
+  const all = loadMarkdownAgents(dirs(projectRoot), "agents");
+  if (all.length === 0) {
+    return { info: "no agents found in .reasonix/agents/ or .claude/agents/" };
+  }
+  const lines = [`▸ agents · ${all.length} available:`];
+  for (const a of all) {
+    const desc = a.description ? `  —  ${a.description}` : "";
+    lines.push(`  /${a.name}${desc}`);
+  }
+  return { info: lines.join("\n") };
+};
+
 export const handlers: Record<string, SlashHandler> = {
   exit,
   new: resetLog,
@@ -170,4 +287,6 @@ export const handlers: Record<string, SlashHandler> = {
   loop,
   keys,
   about,
+  slash: slashCmd,
+  agents,
 };
