@@ -95,14 +95,14 @@ describe("SlashSuggestions", () => {
     const frame = lastFrame() ?? "";
     unmount();
 
-    expect(matches).toHaveLength(48);
+    expect(matches).toHaveLength(49);
     expect(names).toContain("language");
     expect(names).toContain("weixin");
     expect(names).toContain("btw");
     expect(names).toContain("about");
-    expect(countAdvancedCommands(true)).toBe(10);
-    expect(frame).toContain("48 commands");
-    expect(frame).toContain("+ 10 advanced");
+    expect(countAdvancedCommands(true)).toBe(11);
+    expect(frame).toContain("49 commands");
+    expect(frame).toContain("+ 11 advanced");
   });
 
   it("surfaces /language for typed language prefixes", () => {

@@ -16,6 +16,7 @@
  */
 
 import { Box, type Color, Text } from "ink";
+// biome-ignore lint/style/useImportType: classic JSX transform needs React in scope
 import React, { useMemo, useState } from "react";
 import { t } from "../../i18n/index.js";
 import type { PlanStep, StepCompletion } from "../../tools/plan.js";
