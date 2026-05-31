@@ -164,6 +164,7 @@ import { useActivityLabel } from "./hooks/useActivityPhase.js";
 import { useAgentSession } from "./hooks/useAgentSession.js";
 import { useCodeMode } from "./hooks/useCodeMode.js";
 import { useEditGate } from "./hooks/useEditGate.js";
+import { useExtraSlashHandlers } from "./hooks/useExtraSlashHandlers.js";
 import { useHookList } from "./hooks/useHookList.js";
 import { useInputRecall } from "./hooks/useInputRecall.js";
 import { useLanguageReload } from "./hooks/useLanguageReload.js";
@@ -592,6 +593,9 @@ function AppInner({
     codeMode?.rootDir,
   );
   const { hookList, reloadHooks } = useHookList(codeMode?.rootDir);
+  const { handlers: extraHandlers, reload: reloadExtraHandlers } = useExtraSlashHandlers(
+    codeMode?.rootDir,
+  );
   // Session-scoped edit history + undo banner + /undo, /history, /show
   // handlers. Kept in a custom hook so App.tsx only sees the small API
   // it needs —append an edit, arm the banner, answer the slash
@@ -3124,6 +3128,8 @@ function AppInner({
             return added;
           },
           reloadHooks: () => reloadHooks(codeMode ? currentRootDir : undefined),
+          extraHandlers,
+          reloadExtraHandlers: () => reloadExtraHandlers(),
           switchCwd: codeMode?.reregisterTools ? switchWorkspaceRoot : undefined,
           reloadMcp: mcpRuntime
             ? async () => {
@@ -3697,6 +3703,8 @@ function AppInner({
       generateCurrentSessionTitle,
       switchWorkspaceRoot,
       system,
+      extraHandlers,
+      reloadExtraHandlers,
     ],
   );
 
