@@ -167,6 +167,11 @@ export interface SlashContext {
   };
   /** Current session id — included in `/feedback`'s diagnostic block when present. */
   sessionId?: string;
+  /** Extra slash-command handlers (skill auto-registration + custom commands from settings.json).
+   *  Checked after the static HANDLERS record; project/global scope merge handled upstream. */
+  extraHandlers?: Record<string, import("./dispatch.js").SlashHandler>;
+  /** Callback to reload extra handlers mid-session (skill changes + custom command edits). */
+  reloadExtraHandlers?: () => number;
 }
 
 export type SlashGroup =

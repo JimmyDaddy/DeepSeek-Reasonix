@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { accessSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import { t } from "./i18n/index.js";
 import { NEGATIVE_CLAIM_RULE, TUI_FORMATTING_RULES } from "./prompt-fragments.js";
@@ -46,6 +46,8 @@ export interface Skill {
   runAs: SkillRunAs;
   /** Subagent model override; only meaningful when `runAs === "subagent"`. */
   model?: string;
+  /** When true, this skill is excluded from the model's skills index and is only available as a user-invoked slash command `/name`. Compatible with Claude Code's `disable-model-invocation` frontmatter. Default false. */
+  disableModelInvocation?: boolean;
 }
 
 export interface SkillRoot {
@@ -82,6 +84,16 @@ export function validateSkillFrontmatter(raw: string): { ok: true } | { error: s
 
 function isValidSkillName(name: string): boolean {
   return VALID_SKILL_NAME.test(name);
+}
+
+/** Allow CJK characters in frontmatter-provided names (used by agent files).
+ *  Stem-based names from filenames still require ASCII validation. */
+const VALID_FRONTMATTER_NAME = /^[a-zA-Z0-9\u4e00-\u9fff\u3400-\u4dbf_./-]{1,64}$/;
+
+function resolveSkillName(fmName: string | undefined, stem: string): string {
+  if (fmName && VALID_FRONTMATTER_NAME.test(fmName)) return fmName;
+  if (isValidSkillName(stem)) return stem;
+  return fmName ?? stem;
 }
 
 function parseAllowedTools(raw: string | undefined): readonly string[] | undefined {
@@ -138,6 +150,15 @@ export class SkillStore {
       // Claude Code compatibility — a user's `.claude/skills/` folder works as-is.
       out.push({
         dir: join(this.projectRoot, ".claude", SKILLS_DIRNAME),
+        scope: "project",
+      });
+      // Agent dirs — Reasonix native + Claude Code compat
+      out.push({
+        dir: join(this.projectRoot, ".reasonix", "agents"),
+        scope: "project",
+      });
+      out.push({
+        dir: join(this.projectRoot, ".claude", "agents"),
         scope: "project",
       });
     }
@@ -251,20 +272,23 @@ export class SkillStore {
   private readEntry(dir: string, scope: SkillScope, entry: import("node:fs").Dirent): Skill | null {
     const isDir =
       entry.isDirectory() || (entry.isSymbolicLink() && this.isSymlinkDirectory(dir, entry.name));
-    // Symlinked flat `<name>.md` files: `entry.isFile()` returns false for symlinks.
-    // Reuse the same `statSync` pattern as `isSymlinkDirectory` (#2104).
     const isFile =
       entry.isFile() || (entry.isSymbolicLink() && !isDir && this.isSymlinkFile(dir, entry.name));
+    // Agent dirs use flat .md files with CJK names; allow them through.
+    // Agents always run as subagent (isolated child loop).
+    const isAgentDir = basename(dir) === "agents";
     if (isDir) {
       if (!isValidSkillName(entry.name)) return null;
       const file = join(dir, entry.name, SKILL_FILE);
       if (!existsSync(file)) return null;
-      return this.parse(file, entry.name, scope);
+      return this.parse(file, entry.name, scope, isAgentDir);
     }
     if (isFile && entry.name.endsWith(".md")) {
       const stem = entry.name.slice(0, -3);
-      if (!isValidSkillName(stem)) return null;
-      return this.parse(join(dir, entry.name), stem, scope);
+      // Agent dirs allow CJK names; skill dirs require ASCII
+      if (!isAgentDir && !isValidSkillName(stem)) return null;
+      if (isAgentDir && !VALID_FRONTMATTER_NAME.test(stem)) return null;
+      return this.parse(join(dir, entry.name), stem, scope, isAgentDir);
     }
     return null;
   }
@@ -287,7 +311,7 @@ export class SkillStore {
     }
   }
 
-  private parse(path: string, stem: string, scope: SkillScope): Skill | null {
+  private parse(path: string, stem: string, scope: SkillScope, isAgent = false): Skill | null {
     let raw: string;
     try {
       raw = readFileSync(path, "utf8");
@@ -295,7 +319,10 @@ export class SkillStore {
       return null;
     }
     const { data, body } = parseFrontmatter(raw);
-    const name = data.name && isValidSkillName(data.name) ? data.name : stem;
+    // Frontmatter `name:` can include CJK characters (used by agent files).
+    // Stem-based names (from filenames) still require ASCII validation.
+    const fmName = data.name?.trim();
+    const name = resolveSkillName(fmName, stem);
     const description = (data.description ?? "").trim();
     // Surface the silent-pin failure mode at parse time. Builtins always have
     // a description so user-authored files are the only ones that hit this.
@@ -310,9 +337,11 @@ export class SkillStore {
       body: loadBodyWithReferences(path, body.trim()),
       scope,
       path,
-      allowedTools: parseAllowedTools(data["allowed-tools"]),
-      runAs: parseRunAs(data.runAs, data.context, data.agent),
+      allowedTools: parseAllowedTools(data["allowed-tools"] ?? data.tools),
+      runAs: isAgent ? "subagent" : parseRunAs(data.runAs, data.context, data.agent),
       model: data.model?.startsWith("deepseek-") ? data.model : undefined,
+      disableModelInvocation:
+        data["disable-model-invocation"] === "true" || data.disableModelInvocation === "true",
     };
   }
 }
@@ -439,7 +468,7 @@ const MISSING_DESCRIPTION_PLACEHOLDER =
 /** Bodies stay out — prefix must stay short + cacheable; bodies load on demand. */
 export function applySkillsIndex(basePrompt: string, opts: SkillStoreOptions = {}): string {
   const store = new SkillStore(opts);
-  const skills = store.list();
+  const skills = store.list().filter((s) => !s.disableModelInvocation);
   if (skills.length === 0) return basePrompt;
   const lines = skills.map((s) =>
     skillIndexLine(s.description ? s : { ...s, description: MISSING_DESCRIPTION_PLACEHOLDER }),

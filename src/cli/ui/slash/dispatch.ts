@@ -58,9 +58,21 @@ export function handleSlash(
   loop: CacheFirstLoop,
   ctx: SlashContext = {},
 ): SlashResult {
-  const h = HANDLERS[resolveSlashAlias(cmd)];
+  const resolved = resolveSlashAlias(cmd);
+  const h = HANDLERS[resolved];
   if (h) return h(args, loop, ctx);
-  const suggestions = nearestCommands(cmd, Object.keys(HANDLERS));
+
+  // Fallback to extra handlers (skill auto-registration + custom commands)
+  if (ctx.extraHandlers) {
+    const extra = ctx.extraHandlers[resolved];
+    if (extra) return extra(args, loop, ctx);
+  }
+
+  const allKeys = [
+    ...Object.keys(HANDLERS),
+    ...(ctx.extraHandlers ? Object.keys(ctx.extraHandlers) : []),
+  ];
+  const suggestions = nearestCommands(cmd, allKeys);
   if (suggestions.length > 0) {
     const list = suggestions.map((name) => `/${name}`).join(", ");
     return { unknown: true, info: t("handlers.basic.unknownCommand", { cmd, list }) };
