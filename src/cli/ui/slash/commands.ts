@@ -389,6 +389,18 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
     summary: "list active hooks (settings.json under .reasonix/) · reload re-reads from disk",
   },
   {
+    cmd: "slash",
+    group: "advanced",
+    argsHint: "[list|reload]",
+    summary: "list custom slash commands (skills + settings.json) · reload re-reads from disk",
+  },
+  {
+    cmd: "agents",
+    group: "extend",
+    argsHint: "[list|show <name>|new <name>|run <name> [args]]",
+    summary: "list / inspect agents (.reasonix/agents/ + .claude/agents/)",
+  },
+  {
     cmd: "permissions",
     group: "advanced",
     argsHint: "[list|add <prefix>|remove <prefix|N>|clear confirm]",
@@ -428,13 +440,35 @@ export const SLASH_COMMANDS: readonly SlashCommandSpec[] = [
   { cmd: "exit", group: "advanced", summary: "quit the TUI", aliases: ["quit", "q"] },
 ];
 
+/** Extra slash-command specs injected by the TUI at startup
+ *  (skill auto-registration + custom commands from settings.json).
+ *  Checked by `suggestSlashCommands` alongside the built-in SLASH_COMMANDS. */
+let _extraSlashSpecs: readonly SlashCommandSpec[] = [];
+
+/** Replace the extra command specs. Returns the new count. Called by App.tsx at
+ *  startup and on `/slash reload`. Pass [] to clear. */
+export function setExtraSlashSpecs(specs: readonly SlashCommandSpec[]): number {
+  _extraSlashSpecs = Object.freeze([...specs]);
+  _cachedAliasMap = null; // invalidate cache
+  return _extraSlashSpecs.length;
+}
+
+function allSlashCommands(): readonly SlashCommandSpec[] {
+  if (_extraSlashSpecs.length === 0) return SLASH_COMMANDS;
+  // Dedup: built-in commands take priority; extra specs with same cmd name are ignored.
+  const builtinNames = new Set(SLASH_COMMANDS.map((c) => c.cmd));
+  const uniqueExtras = _extraSlashSpecs.filter((c) => !builtinNames.has(c.cmd));
+  return [...SLASH_COMMANDS, ...uniqueExtras];
+}
+
 export function suggestSlashCommands(
   prefix: string,
   codeMode = false,
   counts?: Readonly<Record<string, number>>,
 ): SlashCommandSpec[] {
   const p = prefix.toLowerCase();
-  const matches = SLASH_COMMANDS.filter((c) => {
+  const all = allSlashCommands();
+  const matches = all.filter((c) => {
     // Empty prefix = browsing the menu — show the full release command surface except
     // advanced rows, which remain collapsed behind the footer hint.
     if (p === "") return c.group !== "advanced";
@@ -453,23 +487,29 @@ export function suggestSlashCommands(
 }
 
 export function countAdvancedCommands(codeMode: boolean): number {
-  return SLASH_COMMANDS.filter(
+  return allSlashCommands().filter(
     (c) => c.group === "advanced" && (c.contextual !== "code" || codeMode),
   ).length;
 }
 
-/** alias → canonical cmd map, derived from SLASH_COMMANDS at module init. */
-const ALIAS_TO_CMD: Readonly<Record<string, string>> = (() => {
+/** alias → canonical cmd map, derived from ALL available commands (built-in + extra).
+ *  Cached; invalidated when `setExtraSlashSpecs` is called. */
+let _cachedAliasMap: Record<string, string> | null = null;
+
+function getAliasMap(): Record<string, string> {
+  if (_cachedAliasMap) return _cachedAliasMap;
   const m: Record<string, string> = {};
-  for (const spec of SLASH_COMMANDS) {
+  for (const spec of allSlashCommands()) {
     if (!spec.aliases) continue;
     for (const a of spec.aliases) m[a] = spec.cmd;
   }
+  _cachedAliasMap = m;
   return m;
-})();
+}
 
 export function resolveSlashAlias(name: string): string {
-  return ALIAS_TO_CMD[name] ?? name;
+  const m = getAliasMap();
+  return m[name] ?? name;
 }
 
 /** Picker fires only when arg tail has no internal whitespace; past that it's a usage hint. */
@@ -478,7 +518,7 @@ export function detectSlashArgContext(input: string, codeMode = false): SlashArg
   if (!m) return null;
   const cmdName = resolveSlashAlias(m[1]!.toLowerCase());
   const tail = m[2] ?? "";
-  const spec = SLASH_COMMANDS.find(
+  const spec = allSlashCommands().find(
     (s) => s.cmd === cmdName && (s.contextual !== "code" || codeMode),
   );
   if (!spec) return null;

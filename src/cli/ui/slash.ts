@@ -11,6 +11,7 @@ export {
   detectSlashArgContext,
   orderSlashCommandsByGroup,
   parseSlash,
+  setExtraSlashSpecs,
   suggestSlashCommands,
 } from "./slash/commands.js";
 export { handleSlash } from "./slash/dispatch.js";
