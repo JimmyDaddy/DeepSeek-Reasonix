@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -123,5 +126,21 @@ func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 		if m.pending.String() != txt {
 			t.Errorf("answer text should buffer verbatim, got %q want %q", m.pending.String(), txt)
 		}
+	}
+}
+
+func TestInsertNewlineKeyBinding(t *testing.T) {
+	ti := textarea.New()
+	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j", "shift+enter"))
+	keys := ti.KeyMap.InsertNewline.Keys()
+	found := false
+	for _, k := range keys {
+		if k == "shift+enter" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("InsertNewline should include shift+enter, got %v", keys)
 	}
 }
