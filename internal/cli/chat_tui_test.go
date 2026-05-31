@@ -4,9 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
-
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -129,10 +127,13 @@ func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 	}
 }
 
+// TestInsertNewlineKeyBinding verifies newChatTUI actually wires shift+enter
+// into the textarea's InsertNewline binding (plain Enter submits, so a newline
+// needs a modifier). It exercises the real constructor, not a hand-built binding.
 func TestInsertNewlineKeyBinding(t *testing.T) {
-	ti := textarea.New()
-	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j", "shift+enter"))
-	keys := ti.KeyMap.InsertNewline.Keys()
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	keys := m.input.KeyMap.InsertNewline.Keys()
 	found := false
 	for _, k := range keys {
 		if k == "shift+enter" {
@@ -141,6 +142,6 @@ func TestInsertNewlineKeyBinding(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("InsertNewline should include shift+enter, got %v", keys)
+		t.Errorf("newChatTUI InsertNewline should include shift+enter, got %v", keys)
 	}
 }
