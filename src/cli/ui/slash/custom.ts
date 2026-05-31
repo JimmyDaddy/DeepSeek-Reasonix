@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { globalSettingsPath, projectSettingsPath } from "../../../hooks.js";
 import { t } from "../../../i18n/index.js";
+import { quoteForCmdExe } from "../../../tools/shell.js";
 import type { SlashCommandSpec, SlashResult } from "./types.js";
 
 /** Per-command config shape inside settings.json["slashCommands"]. */
@@ -23,6 +24,21 @@ interface SlashSettings {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+function quotePosixShellArg(arg: string): string {
+  if (arg === "") return "''";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, `'"'"'`)}'`;
+}
+
+function quoteShellArg(arg: string): string {
+  return process.platform === "win32" ? quoteForCmdExe(arg) : quotePosixShellArg(arg);
+}
+
+function appendShellArgs(command: string, args: readonly string[]): string {
+  if (args.length === 0) return command;
+  return `${command} ${args.map(quoteShellArg).join(" ")}`;
+}
 
 function readSlashSettings(path: string): SlashSettings | null {
   if (!existsSync(path)) return null;
@@ -111,8 +127,9 @@ export class CustomSlashRegistry {
    *  captures stdout/stderr, and returns the output as `info`. */
   execute(name: string, args: string[], command: string): SlashResult {
     try {
-      // Append user-passed args to the command string
-      const cmd = args.length > 0 ? `${command} ${args.join(" ")}` : command;
+      // Shell commands remain shell-native, but user args must be quoted so
+      // spaces/metacharacters stay literal instead of changing execution.
+      const cmd = appendShellArgs(command, args);
       const stdout = execSync(cmd, {
         encoding: "utf8" as const,
         timeout: DEFAULT_TIMEOUT_MS,

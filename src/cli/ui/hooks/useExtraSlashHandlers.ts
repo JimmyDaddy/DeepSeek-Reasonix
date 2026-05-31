@@ -1,7 +1,7 @@
 // Combined extra slash-command handler map: .md commands > settings.json > skills/agents.
 
 import { join } from "node:path";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { SkillStore } from "../../../skills.js";
 import { setExtraSlashSpecs } from "../slash/commands.js";
 import { CustomSlashRegistry } from "../slash/custom.js";
@@ -25,11 +25,8 @@ export function useExtraSlashHandlers(
   projectRoot: string | undefined,
   homeDir?: string,
 ): ExtraSlashHandlers {
-  const projectRootRef = useRef(projectRoot);
-  projectRootRef.current = projectRoot;
-
   const build = useCallback((): Record<string, SlashHandler> => {
-    const root = projectRootRef.current;
+    const root = projectRoot;
     const handlers: Record<string, SlashHandler> = {};
 
     // Skill auto-registration (lowest priority)
@@ -40,13 +37,38 @@ export function useExtraSlashHandlers(
     for (const skill of skills) {
       handlers[skill.name] = (_args, _loop, _ctx) => {
         const fresh = skillStoreRef.current.read(skill.name);
-        const body = fresh?.body ?? skill.body;
-        const desc = fresh?.description ?? skill.description;
-        const header = `# Skill: ${skill.name}${desc ? `\n> ${desc}` : ""}`;
+        const resolved = fresh ?? skill;
+        const body = resolved.body;
+        const desc = resolved.description;
         const extraArgs = _args.join(" ").trim();
+        if (resolved.runAs === "subagent") {
+          if (!extraArgs) {
+            return {
+              info: `skill "${resolved.name}" runs as a subagent and requires a task argument.`,
+            };
+          }
+          if (!_ctx.runSlashSubagent) {
+            return {
+              info: `skill "${resolved.name}" runs as a subagent, but this session cannot launch subagents from slash commands.`,
+            };
+          }
+          void _ctx.runSlashSubagent(resolved, extraArgs).then(
+            (text) => {
+              if (text) _ctx.postInfo?.(text);
+            },
+            (err) => {
+              const reason = err instanceof Error ? err.message : String(err);
+              _ctx.postInfo?.(`▲ subagent "${resolved.name}" failed: ${reason}`);
+            },
+          );
+          return {
+            info: `▸ running skill "${resolved.name}" — ${extraArgs}`,
+          };
+        }
+        const header = `# Skill: ${skill.name}${desc ? `\n> ${desc}` : ""}`;
         const argsLine = extraArgs ? `\n\nArguments: ${extraArgs}` : "";
         return {
-          info: `▸ running skill "${skill.name}"${extraArgs ? ` — ${extraArgs}` : ""}`,
+          info: `▸ running skill "${resolved.name}"${extraArgs ? ` — ${extraArgs}` : ""}`,
           resubmit: `${header}\n\n${body}${argsLine}`,
         };
       };
@@ -116,9 +138,13 @@ export function useExtraSlashHandlers(
     setExtraSlashSpecs(extraSpecs);
 
     return handlers;
-  }, [homeDir]);
+  }, [homeDir, projectRoot]);
 
   const handlersRef = useRef<Record<string, SlashHandler>>(build());
+  useEffect(() => {
+    handlersRef.current = build();
+  }, [build]);
+
   const reload = useCallback((): number => {
     handlersRef.current = build();
     return Object.keys(handlersRef.current).length;

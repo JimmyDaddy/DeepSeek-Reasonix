@@ -4,7 +4,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import React from "react";
+// @ts-expect-error react-test-renderer is present at runtime but has no local typings here.
+import TestRenderer, { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type ExtraSlashHandlers,
+  useExtraSlashHandlers,
+} from "../src/cli/ui/hooks/useExtraSlashHandlers.js";
 import { handleSlash, parseSlash } from "../src/cli/ui/slash.js";
 import { setExtraSlashSpecs, suggestSlashCommands } from "../src/cli/ui/slash/commands.js";
 import { CustomSlashRegistry } from "../src/cli/ui/slash/custom.js";
@@ -22,6 +29,15 @@ function makeLoop() {
     client,
     prefix: new ImmutablePrefix({ system: "s" }),
   });
+}
+
+function HookProbe(props: {
+  projectRoot?: string;
+  homeDir?: string;
+  onUpdate: (value: ExtraSlashHandlers) => void;
+}) {
+  props.onUpdate(useExtraSlashHandlers(props.projectRoot, props.homeDir));
+  return null;
 }
 
 // CustomSlashRegistry
@@ -118,6 +134,17 @@ describe("CustomSlashRegistry", () => {
     const reg = new CustomSlashRegistry({ homeDir: home });
     const result = reg.execute("test", ["--verbose", "foo"], "echo");
     expect(result.info).toBe("--verbose foo");
+  });
+
+  it("execute() quotes user args before appending them to the shell command", () => {
+    const reg = new CustomSlashRegistry({ homeDir: home });
+    const dangerArg = process.platform === "win32" ? "one & echo injected" : "one; echo injected";
+    const result = reg.execute(
+      "test",
+      [dangerArg],
+      'node -e "process.stdout.write(process.argv[1])"',
+    );
+    expect(result.info).toBe(dangerArg);
   });
 
   it("execute() returns error info when command fails", () => {
@@ -263,6 +290,118 @@ describe("Skill disableModelInvocation", () => {
       disableBuiltins: true,
     });
     expect(result).toContain("helper");
+  });
+});
+
+describe("useExtraSlashHandlers", () => {
+  let home: string;
+  let project1: string;
+  let project2: string;
+  let renderer: TestRenderer.ReactTestRenderer | null;
+  let latest: ExtraSlashHandlers | null;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "reasonix-extra-home-"));
+    project1 = mkdtempSync(join(tmpdir(), "reasonix-extra-proj1-"));
+    project2 = mkdtempSync(join(tmpdir(), "reasonix-extra-proj2-"));
+    renderer = null;
+    latest = null;
+  });
+
+  afterEach(() => {
+    renderer?.unmount();
+    setExtraSlashSpecs([]);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(project1, { recursive: true, force: true });
+    rmSync(project2, { recursive: true, force: true });
+  });
+
+  it("refreshes handlers when the project root changes", async () => {
+    const dir1 = join(project1, ".reasonix", "commands");
+    const dir2 = join(project2, ".reasonix", "commands");
+    mkdirSync(dir1, { recursive: true });
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(join(dir1, "one.md"), "---\ndescription: one\n---\n\none", "utf8");
+    writeFileSync(join(dir2, "two.md"), "---\ndescription: two\n---\n\ntwo", "utf8");
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(HookProbe, {
+          projectRoot: project1,
+          homeDir: home,
+          onUpdate: (value) => {
+            latest = value;
+          },
+        }),
+      );
+    });
+
+    expect(Object.keys(latest!.handlers)).toContain("one");
+    expect(Object.keys(latest!.handlers)).not.toContain("two");
+
+    await act(async () => {
+      renderer!.update(
+        React.createElement(HookProbe, {
+          projectRoot: project2,
+          homeDir: home,
+          onUpdate: (value) => {
+            latest = value;
+          },
+        }),
+      );
+    });
+
+    expect(Object.keys(latest!.handlers)).toContain("two");
+    expect(Object.keys(latest!.handlers)).not.toContain("one");
+  });
+
+  it("auto-registered subagent skills call runSlashSubagent and post their result", async () => {
+    const agentsDir = join(project1, ".reasonix", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      join(agentsDir, "planner.md"),
+      "---\nname: planner\ndescription: Plan work\ntools: Read, Write\nmodel: deepseek-v4-pro\n---\n\nReview: $ARGUMENTS",
+      "utf8",
+    );
+
+    await act(async () => {
+      renderer = TestRenderer.create(
+        React.createElement(HookProbe, {
+          projectRoot: project1,
+          homeDir: home,
+          onUpdate: (value) => {
+            latest = value;
+          },
+        }),
+      );
+    });
+
+    const runSlashSubagent = vi.fn().mockResolvedValue("subagent output");
+    let posted = "";
+    const result = latest!.handlers.planner?.(["audit"], makeLoop(), {
+      runSlashSubagent,
+      postInfo: (text) => {
+        posted = text;
+      },
+    });
+
+    expect(result?.resubmit).toBeUndefined();
+    expect(result?.info).toContain("planner");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(runSlashSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "planner",
+        runAs: "subagent",
+        model: "deepseek-v4-pro",
+        allowedTools: ["Read", "Write"],
+      }),
+      "audit",
+    );
+    expect(posted).toBe("subagent output");
   });
 });
 

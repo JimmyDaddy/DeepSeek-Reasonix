@@ -593,9 +593,7 @@ function AppInner({
     codeMode?.rootDir,
   );
   const { hookList, reloadHooks } = useHookList(codeMode?.rootDir);
-  const { handlers: extraHandlers, reload: reloadExtraHandlers } = useExtraSlashHandlers(
-    codeMode?.rootDir,
-  );
+  const extraSlash = useExtraSlashHandlers(currentRootDir);
   // Session-scoped edit history + undo banner + /undo, /history, /show
   // handlers. Kept in a custom hook so App.tsx only sees the small API
   // it needs —append an edit, arm the banner, answer the slash
@@ -1113,6 +1111,33 @@ function AppInner({
       });
     },
     [currentRootDir, loop.client, loop.log.entries, loop.model, model, onSwitchSession, session],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: subagentSinkRef.current is a mutable ref intentionally read at call time.
+  const runSlashSubagent = useCallback(
+    async (skill: import("../../skills.js").Skill, task: string): Promise<string> => {
+      if (!tools) {
+        return `▲ subagent "${skill.name}" is unavailable in this session (no tool registry wired).`;
+      }
+      const result = await spawnSubagent({
+        client: loop.client,
+        parentRegistry: tools,
+        system: skill.body,
+        task,
+        model: skill.model,
+        allowedTools: skill.allowedTools,
+        sink: subagentSinkRef.current,
+        skillName: skill.name,
+      });
+      if (result.forcedSummary) {
+        return `▸ subagent "${skill.name}" returned a partial answer\n\n${result.output}`;
+      }
+      if (!result.success) {
+        return `▲ subagent "${skill.name}" failed: ${result.error ?? "unknown subagent error"}`;
+      }
+      return result.output;
+    },
+    [loop.client, tools],
   );
 
   const switchWorkspaceRoot = useCallback(
@@ -3033,6 +3058,7 @@ function AppInner({
           codeHistory: codeMode ? codeHistory : undefined,
           codeShowEdit: codeMode ? codeShowEdit : undefined,
           codeRoot: codeMode ? currentRootDir : undefined,
+          workspaceRoot: currentRootDir,
           pendingEditCount: codeMode ? pendingEdits.current.length : undefined,
           memoryRoot: currentRootDir,
           planMode,
@@ -3073,6 +3099,7 @@ function AppInner({
             status: weixin.status,
           },
           sessionId: session,
+          runSlashSubagent,
           getEngineeringLifecycleSnapshot: codeMode
             ? () => engineeringLifecycleRef.current?.snapshot() ?? null
             : undefined,
@@ -3128,8 +3155,8 @@ function AppInner({
             return added;
           },
           reloadHooks: () => reloadHooks(codeMode ? currentRootDir : undefined),
-          extraHandlers,
-          reloadExtraHandlers: () => reloadExtraHandlers(),
+          extraHandlers: extraSlash.handlers,
+          reloadExtraHandlers: () => extraSlash.reload(),
           switchCwd: codeMode?.reregisterTools ? switchWorkspaceRoot : undefined,
           reloadMcp: mcpRuntime
             ? async () => {
@@ -3703,8 +3730,8 @@ function AppInner({
       generateCurrentSessionTitle,
       switchWorkspaceRoot,
       system,
-      extraHandlers,
-      reloadExtraHandlers,
+      runSlashSubagent,
+      extraSlash,
     ],
   );
 

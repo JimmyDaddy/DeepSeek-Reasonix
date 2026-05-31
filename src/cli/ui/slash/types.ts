@@ -1,6 +1,7 @@
 import type { EngineeringLifecycleSnapshot } from "../../../code/lifecycle.js";
 import type { EditMode } from "../../../config.js";
 import type { McpServerSummary } from "../../../mcp/summary.js";
+import type { Skill } from "../../../skills.js";
 import type { JobRegistry } from "../../../tools/jobs.js";
 import type { PlanStep } from "../../../tools/plan.js";
 import type { CodeUndoOutput } from "../undo-context.js";
@@ -70,6 +71,8 @@ export interface SlashContext {
   codeHistory?: () => string;
   codeShowEdit?: (args: readonly string[]) => string;
   codeRoot?: string;
+  /** Current workspace root even outside code mode — used by project-scoped slash extensions. */
+  workspaceRoot?: string;
   getEngineeringLifecycleSnapshot?: () => EngineeringLifecycleSnapshot | null;
   pendingEditCount?: number;
   mcpServers?: McpServerSummary[];
@@ -167,6 +170,8 @@ export interface SlashContext {
   };
   /** Current session id — included in `/feedback`'s diagnostic block when present. */
   sessionId?: string;
+  /** Launch a runAs=subagent skill/agent from a slash command and return the final user-facing text. */
+  runSlashSubagent?: (skill: Skill, task: string) => Promise<string>;
   /** Extra slash-command handlers (skill auto-registration + custom commands from settings.json).
    *  Checked after the static HANDLERS record; project/global scope merge handled upstream. */
   extraHandlers?: Record<string, import("./dispatch.js").SlashHandler>;

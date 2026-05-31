@@ -252,13 +252,14 @@ export class SkillStore {
     if (!isValidSkillName(name)) return null;
     for (const { dir, scope, status } of this.roots()) {
       if (status !== "ok") continue;
+      const isAgentDir = basename(dir) === "agents";
       const dirCandidate = join(dir, name, SKILL_FILE);
       if (existsSync(dirCandidate) && statSync(dirCandidate).isFile()) {
-        return this.parse(dirCandidate, name, scope);
+        return this.parse(dirCandidate, name, scope, isAgentDir);
       }
       const flatCandidate = join(dir, `${name}.md`);
       if (existsSync(flatCandidate) && statSync(flatCandidate).isFile()) {
-        return this.parse(flatCandidate, name, scope);
+        return this.parse(flatCandidate, name, scope, isAgentDir);
       }
     }
     if (!this.disableBuiltins) {

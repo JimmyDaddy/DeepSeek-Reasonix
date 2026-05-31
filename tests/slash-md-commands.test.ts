@@ -294,7 +294,7 @@ describe("/agents handler", () => {
     writeAgent("planner", "name: planner\ndescription: Plans", "Plan things.");
     writeAgent("reviewer", "name: reviewer\ndescription: Reviews", "Review things.");
 
-    const result = handleSlash("agents", [], loop, { codeRoot: project });
+    const result = handleSlash("agents", [], loop, { workspaceRoot: project });
     expect(result.info).toContain("2 available");
     expect(result.info).toContain("/planner");
     expect(result.info).toContain("/reviewer");
@@ -335,11 +335,17 @@ describe("/agents handler", () => {
   });
 
   it("/agents new <name> creates a stub file", () => {
-    const result = handleSlash("agents", ["new", "myagent"], loop, { codeRoot: project });
+    const result = handleSlash("agents", ["new", "myagent"], loop, { workspaceRoot: project });
     expect(result.info).toContain("created");
 
     // Verify file exists
     expect(existsSync(join(project, ".reasonix", "agents", "myagent.md"))).toBe(true);
+  });
+
+  it("/agents new rejects invalid names that would escape the agents directory", () => {
+    const result = handleSlash("agents", ["new", "../escape"], loop, { workspaceRoot: project });
+    expect(result.info).toContain("invalid agent name");
+    expect(existsSync(join(project, ".reasonix", "escape.md"))).toBe(false);
   });
 
   it("/agents new without name shows usage", () => {
@@ -358,14 +364,38 @@ describe("/agents handler", () => {
     expect(result.info).toContain("requires a project root");
   });
 
-  it("/agents run <name> invokes agent with resubmit", () => {
-    writeAgent("runner", "name: runner\ndescription: Runner", "Execute: $ARGUMENTS");
+  it("/agents run <name> invokes the agent as a subagent and posts its result", async () => {
+    writeAgent(
+      "runner",
+      "name: runner\ndescription: Runner\ntools: Read, Write\nmodel: deepseek-v4-pro",
+      "Execute: $ARGUMENTS",
+    );
 
-    const result = handleSlash("agents", ["run", "runner", "task1"], loop, { codeRoot: project });
-    expect(result.resubmit).toBeDefined();
-    expect(result.resubmit).toContain("Execute: task1");
+    const runSlashSubagent = vi.fn().mockResolvedValue("agent result");
+    let posted = "";
+    const result = handleSlash("agents", ["run", "runner", "task1"], loop, {
+      workspaceRoot: project,
+      runSlashSubagent,
+      postInfo: (text) => {
+        posted = text;
+      },
+    });
+
+    await Promise.resolve();
+
+    expect(result.resubmit).toBeUndefined();
     expect(result.info).toContain("runner");
     expect(result.info).toContain("task1");
+    expect(runSlashSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "runner",
+        runAs: "subagent",
+        model: "deepseek-v4-pro",
+        allowedTools: ["Read", "Write"],
+      }),
+      "task1",
+    );
+    expect(posted).toBe("agent result");
   });
 
   it("/agents run without name shows usage", () => {
@@ -378,11 +408,10 @@ describe("/agents handler", () => {
     expect(result.info).toContain("not found");
   });
 
-  it("/agents run without args keeps $ARGUMENTS placeholder", () => {
+  it("/agents run without args requires a task argument", () => {
     writeAgent("noargs", "name: noargs\ndescription: No args", "Do: $ARGUMENTS done");
 
     const result = handleSlash("agents", ["run", "noargs"], loop, { codeRoot: project });
-    // No extra args → $ARGUMENTS stays verbatim in the body
-    expect(result.resubmit).toContain("$ARGUMENTS");
+    expect(result.info).toContain("requires a task argument");
   });
 });

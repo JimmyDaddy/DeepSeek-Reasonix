@@ -3,15 +3,18 @@ import { join } from "node:path";
 import { wrapToCells } from "@/cli/ui/text-width.js";
 import { t, tObj } from "@/i18n/index.js";
 import { VERSION } from "@/version.js";
+import type { Skill } from "../../../../skills.js";
 import { formatDuration, formatLoopStatus, parseLoopCommand } from "../../loop.js";
 import { SLASH_COMMANDS, SLASH_GROUP_ORDER, orderSlashCommandsByGroup } from "../commands.js";
 import type { SlashHandler } from "../dispatch.js";
-import { loadMarkdownAgents } from "../md-commands.js";
+import { type MarkdownAgentDef, loadMarkdownAgents } from "../md-commands.js";
 import type { SlashCommandSpec, SlashGroup } from "../types.js";
 
 const ABOUT_WEBSITE = "https://esengine.github.io/DeepSeek-Reasonix/";
 const ABOUT_REPO = "https://github.com/esengine/DeepSeek-Reasonix";
 const ABOUT_LICENSE = "MIT";
+const VALID_NEW_AGENT_NAME =
+  /^[a-zA-Z0-9\u4e00-\u9fff\u3400-\u4dbf][a-zA-Z0-9\u4e00-\u9fff\u3400-\u4dbf_.-]{0,63}$/;
 
 const exit: SlashHandler = () => ({ exit: true });
 
@@ -165,6 +168,32 @@ const about: SlashHandler = () => {
   return { info: lines.join("\n") };
 };
 
+function currentWorkspaceRoot(ctx: Parameters<SlashHandler>[2]): string | undefined {
+  return ctx.workspaceRoot ?? ctx.codeRoot;
+}
+
+function parseAgentAllowedTools(raw: string | undefined): readonly string[] | undefined {
+  if (!raw) return undefined;
+  const tools = raw
+    .split(",")
+    .map((tool) => tool.trim())
+    .filter(Boolean);
+  return tools.length > 0 ? tools : undefined;
+}
+
+function toSubagentSkill(agent: MarkdownAgentDef): Skill {
+  return {
+    name: agent.name,
+    description: agent.description,
+    body: agent.body,
+    scope: "project",
+    path: agent.source,
+    allowedTools: parseAgentAllowedTools(agent.tools),
+    runAs: "subagent",
+    model: agent.model,
+  };
+}
+
 const slashCmd: SlashHandler = (args, _loop, ctx) => {
   const sub = (args[0] ?? "").toLowerCase();
 
@@ -191,7 +220,7 @@ const slashCmd: SlashHandler = (args, _loop, ctx) => {
 };
 
 const agents: SlashHandler = (args, _loop, ctx) => {
-  const projectRoot = ctx.codeRoot;
+  const projectRoot = currentWorkspaceRoot(ctx);
   const dirs = (root: string) => [
     join(root, ".reasonix", "agents"),
     join(root, ".claude", "agents"),
@@ -203,6 +232,9 @@ const agents: SlashHandler = (args, _loop, ctx) => {
   if (sub === "new" || sub === "init") {
     const name = args[1];
     if (!name) return { info: "usage: /agents new <name>" };
+    if (!VALID_NEW_AGENT_NAME.test(name)) {
+      return { info: `invalid agent name: "${name}" — use letters, digits, CJK, _, -, .` };
+    }
     if (!projectRoot)
       return { info: "agent creation requires a project root (run from reasonix code)." };
     const targetDir = join(projectRoot, ".reasonix", "agents");
@@ -239,10 +271,25 @@ The agent runs as an isolated subagent (subagent mode).
     const found = all.find((a) => a.name === name);
     if (!found) return { info: `agent "${name}" not found.` };
     const extraArgs = args.slice(2).join(" ").trim();
-    const body = extraArgs ? found.body.replace(/\$ARGUMENTS/g, extraArgs) : found.body;
+    if (!extraArgs) {
+      return { info: `agent "${name}" runs as a subagent and requires a task argument.` };
+    }
+    if (!ctx.runSlashSubagent) {
+      return {
+        info: `agent "${name}" runs as a subagent, but this session cannot launch subagents from slash commands.`,
+      };
+    }
+    void ctx.runSlashSubagent(toSubagentSkill(found), extraArgs).then(
+      (text) => {
+        if (text) ctx.postInfo?.(text);
+      },
+      (err) => {
+        const reason = err instanceof Error ? err.message : String(err);
+        ctx.postInfo?.(`▲ subagent "${name}" failed: ${reason}`);
+      },
+    );
     return {
       info: `▸ running agent "${name}"${extraArgs ? ` — ${extraArgs}` : ""}`,
-      resubmit: `# Agent: ${found.name}${found.description ? `\n> ${found.description}` : ""}\n\n${body}`,
     };
   }
 
