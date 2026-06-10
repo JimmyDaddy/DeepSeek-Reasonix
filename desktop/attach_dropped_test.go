@@ -10,20 +10,13 @@ import (
 
 const desktopTinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
-func TestWorkspaceRelative(t *testing.T) {
-	orig, _ := os.Getwd()
-	defer os.Chdir(orig)
-
+func TestWorkspaceRelativeIn(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
-	cwd, _ := os.Getwd()
 
-	if rel, ok := workspaceRelative(filepath.Join(cwd, "sub", "file.go")); !ok || rel != "sub/file.go" {
+	if rel, ok := workspaceRelativeIn(filepath.Join(root, "sub", "file.go"), root); !ok || rel != "sub/file.go" {
 		t.Fatalf("in-tree = (%q, %v), want (sub/file.go, true)", rel, ok)
 	}
-	if _, ok := workspaceRelative(filepath.Join(filepath.Dir(cwd), "sibling.txt")); ok {
+	if _, ok := workspaceRelativeIn(filepath.Join(filepath.Dir(root), "sibling.txt"), root); ok {
 		t.Fatal("a path above the workspace must not resolve as in-tree")
 	}
 }

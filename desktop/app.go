@@ -3840,7 +3840,7 @@ func (a *App) AttachDropped(path string) (DroppedItem, error) {
 				return nil
 			}
 		}
-		if rel, ok := workspaceRelative(path); ok {
+		if rel, ok := workspaceRelativeIn(path, a.activeWorkspaceRoot()); ok {
 			item = DroppedItem{Kind: "workspace", Path: rel, IsDir: info.IsDir()}
 			return nil
 		}
@@ -3868,12 +3868,16 @@ func isImageExt(path string) bool {
 	return false
 }
 
-func workspaceRelative(path string) (string, bool) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", false
+func workspaceRelativeIn(path, workspaceRoot string) (string, bool) {
+	root := workspaceRoot
+	if !filepath.IsAbs(root) {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return "", false
+		}
+		root = abs
 	}
-	rel, err := filepath.Rel(cwd, path)
+	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return "", false
 	}
