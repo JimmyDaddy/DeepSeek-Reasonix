@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/i18n"
 	"reasonix/internal/skill"
@@ -34,14 +35,15 @@ type ArgData struct {
 	CurrentModel    string
 	ProviderNames   []string
 	CurrentProvider string
+	Subagents       []SubagentSummary
 }
 
 // SlashArgItems completes the arguments of a management slash command
 // (everything after the command word). It returns the suggestions filtered by
 // the token being typed and the byte offset where that token begins, so a caller
 // replaces just that token. Only structured commands participate (/mcp /model
-// /skills /hooks /effort /auto-plan /theme /language); others yield nil. Single
-// source of truth for CLI + desktop.
+// /skills /hooks /subagents /effort /auto-plan /theme /language); others
+// yield nil. Single source of truth for CLI + desktop.
 func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	cmdEnd := strings.IndexAny(line, " \t")
 	if cmdEnd < 0 {
@@ -49,7 +51,7 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	}
 	from := strings.LastIndexAny(line, " \t") + 1
 	cur := line[from:]
-	prior := strings.Fields(line[:from]) // committed tokens, including the command word
+	prior := command.TokenizeArgs(line[:from]) // committed tokens, including the command word
 	var raw []SlashItem
 	switch line[:cmdEnd] {
 	case "/mcp":
@@ -62,6 +64,8 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 		raw = skillArgItems(prior, d)
 	case "/hooks":
 		raw = hooksArgItems(prior)
+	case "/subagents":
+		raw = subagentsArgItems(prior, d)
 	case "/effort":
 		raw = effortArgItems(prior, d)
 	case "/auto-plan":
@@ -306,6 +310,42 @@ func hooksArgItems(prior []string) []SlashItem {
 	return nil
 }
 
+func subagentsArgItems(prior []string, d ArgData) []SlashItem {
+	if len(prior) <= 1 {
+		return []SlashItem{
+			{Label: "cancel", Insert: "cancel ", Hint: i18n.M.ArgSubagentsCancel, Descend: true},
+			{Label: "clear", Insert: "clear ", Hint: i18n.M.ArgSubagentsClear, Descend: true},
+		}
+	}
+	switch prior[1] {
+	case "cancel":
+		if len(prior) != 2 {
+			return nil
+		}
+		var items []SlashItem
+		for _, s := range d.Subagents {
+			label := strings.TrimSpace(s.Alias)
+			if label == "" {
+				label = s.ID
+			}
+			hint := fmt.Sprintf("/%s %s · %s", s.Skill, s.State, s.ID)
+			items = append(items, SlashItem{Label: label, Insert: s.ID, Hint: hint})
+		}
+		return items
+	case "clear":
+		if len(prior) != 2 {
+			return nil
+		}
+		return []SlashItem{
+			{Label: "completed", Insert: "completed", Hint: subagentClearStateHint("completed")},
+			{Label: "failed", Insert: "failed", Hint: subagentClearStateHint("failed")},
+			{Label: "canceled", Insert: "canceled", Hint: subagentClearStateHint("canceled")},
+			{Label: "all", Insert: "all", Hint: subagentClearStateHint("all")},
+		}
+	}
+	return nil
+}
+
 // filterSlash keeps items whose label starts with the typed token (case-
 // insensitive) and drops no-op suggestions — ones whose insert wouldn't change
 // the line because the token is already fully typed (e.g. "/skills list" offering
@@ -333,7 +373,7 @@ func filterSlash(items []SlashItem, line string, from int, cur string) []SlashIt
 // and reports whether it handled the verb. Skills and custom commands are NOT
 // here — those resolve to a turn in Submit.
 func (c *Controller) managementNotice(trimmed string) bool {
-	fields := strings.Fields(trimmed)
+	fields := command.TokenizeArgs(trimmed)
 	if len(fields) == 0 {
 		return false
 	}
@@ -367,6 +407,8 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		c.notice(c.skillListText())
 	case "/hooks":
 		c.notice(c.hookListText())
+	case "/subagents":
+		c.notice(c.subagentsText(fields))
 	case "/mcp":
 		if len(fields) >= 3 && fields[1] == "connect" {
 			n, err := c.ConnectConfiguredMCPServer(fields[2])
@@ -474,6 +516,59 @@ func (c *Controller) memoryListText() string {
 		fmt.Fprintf(&b, "  (%s) %s\n", d.Scope, d.Path)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func (c *Controller) SubagentsText(input string) string {
+	return c.subagentsText(command.TokenizeArgs(input))
+}
+
+func (c *Controller) subagentsText(fields []string) string {
+	sub := ""
+	if len(fields) > 1 {
+		sub = strings.ToLower(fields[1])
+	}
+	switch sub {
+	case "cancel":
+		if len(fields) < 3 {
+			return i18n.M.SubagentsUsageCancel
+		}
+		run, err := c.resolveSubagentRef(fields[2])
+		if err != nil {
+			return err.Error()
+		}
+		if run.ID == "" {
+			return fmt.Sprintf(i18n.M.SubagentNotFoundFmt, fields[2])
+		}
+		c.CancelSubagent(run.ID)
+		return fmt.Sprintf(i18n.M.SubagentCanceledFmt, run.Alias)
+	case "clear":
+		state, ok := normalizeSubagentClearState("completed")
+		if len(fields) > 2 {
+			state, ok = normalizeSubagentClearState(fields[2])
+		}
+		if !ok {
+			return i18n.M.SubagentsUsageClear
+		}
+		c.ClearSubagents(state)
+		if state == "all" {
+			return i18n.M.SubagentsClearedAll
+		}
+		return fmt.Sprintf(i18n.M.SubagentsClearedFmt, subagentClearStateText(state))
+	case "":
+		summaries := c.ListSubagents()
+		if len(summaries) == 0 {
+			return i18n.M.SubagentsNone
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, i18n.M.SubagentsTextHeaderFmt+"\n", len(summaries))
+		for _, s := range summaries {
+			state := SubagentStateText(s.State)
+			fmt.Fprintf(&b, "  %s /%s — %s (%s)\n", s.Alias, s.Skill, state, s.PromptPreview)
+		}
+		return strings.TrimRight(b.String(), "\n")
+	default:
+		return i18n.M.SubagentsUsage
+	}
 }
 
 func (c *Controller) skillListText() string {

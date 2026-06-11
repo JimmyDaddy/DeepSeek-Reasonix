@@ -269,10 +269,13 @@ func (m *Manager) resolve(ids []string) []*Job {
 	if len(ids) == 0 {
 		for _, id := range m.order {
 			j := m.jobs[id]
-			j.mu.Lock()
-			running := j.status == Running
-			j.mu.Unlock()
-			if running {
+			// Treat a job as still active until its final bookkeeping is done and
+			// j.done is closed. Status can flip to a terminal value just before the
+			// completion note is queued, so checking status alone makes Wait(nil)
+			// race ahead of DrainCompletedNote.
+			select {
+			case <-j.done:
+			default:
 				out = append(out, j)
 			}
 		}

@@ -13,9 +13,11 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -56,10 +58,11 @@ var ErrTurnRunning = errors.New("turn already running")
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
-	runner   agent.Runner
-	executor *agent.Agent
-	sink     event.Sink
-	policy   permission.Policy
+	runner      agent.Runner
+	executor    *agent.Agent
+	sink        event.Sink
+	policy      permission.Policy
+	skillRunner skill.SubagentRunner
 
 	label         string
 	systemPrompt  string
@@ -116,6 +119,16 @@ type Controller struct {
 	// writers run serially — but this keeps the contract explicit). Held across
 	// the blocking wait, so it must never be taken by the Approve/Answer paths.
 	promptMu sync.Mutex
+
+	// emitMu serializes every controller-originated Emit. The base event.Sink
+	// contract is serial, while slash subagents and background commands can emit
+	// concurrently with a parent turn.
+	emitMu sync.Mutex
+
+	// subagentMu serializes subagent registry access and transcript merge.
+	subagentMu         sync.Mutex
+	subagentReg        map[string]*SubagentRun
+	pendingCompletions []*SubagentRun
 
 	// mu guards the run state and approval bookkeeping; every critical section
 	// under it is short and non-blocking.
@@ -209,6 +222,44 @@ type RememberResult struct {
 	Err       error
 }
 
+var errSubagentHookBlocked = errors.New("subagent blocked by hooks")
+
+type subagentHookBlockedError struct {
+	reason string
+}
+
+func (e *subagentHookBlockedError) Error() string {
+	if reason := strings.TrimSpace(e.reason); reason != "" {
+		return reason
+	}
+	return errSubagentHookBlocked.Error()
+}
+
+func (e *subagentHookBlockedError) Is(target error) bool {
+	return target == errSubagentHookBlocked
+}
+
+func newSubagentHookBlockedError(reason string) error {
+	return &subagentHookBlockedError{reason: strings.TrimSpace(reason)}
+}
+
+func subagentHookBlockedReason(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var blocked *subagentHookBlockedError
+	if errors.As(err, &blocked) {
+		if reason := strings.TrimSpace(blocked.reason); reason != "" {
+			return reason, true
+		}
+		return errSubagentHookBlocked.Error(), true
+	}
+	if errors.Is(err, errSubagentHookBlocked) {
+		return errSubagentHookBlocked.Error(), true
+	}
+	return "", false
+}
+
 // Options carries the already-built pieces setup assembles. Lifecycle metadata
 // lets the controller mint and rotate session files; Host/Commands are surfaced
 // to frontends that resolve MCP prompts and slash commands.
@@ -217,6 +268,7 @@ type Options struct {
 	Executor      *agent.Agent
 	Sink          event.Sink
 	Policy        permission.Policy
+	SkillRunner   skill.SubagentRunner
 	Label         string
 	SystemPrompt  string
 	SessionDir    string
@@ -271,6 +323,7 @@ func New(opts Options) *Controller {
 		executor:         opts.Executor,
 		sink:             sink,
 		policy:           opts.Policy,
+		skillRunner:      opts.SkillRunner,
 		label:            opts.Label,
 		systemPrompt:     opts.SystemPrompt,
 		sessionDir:       opts.SessionDir,
@@ -310,6 +363,12 @@ func New(opts Options) *Controller {
 		c.executor.SetMemoryQueue(c)
 	}
 	return c
+}
+
+func (c *Controller) emit(e event.Event) {
+	c.emitMu.Lock()
+	defer c.emitMu.Unlock()
+	c.sink.Emit(e)
 }
 
 // SetDisplayRecorder installs an optional hook used by frontends that persist a
@@ -422,10 +481,9 @@ func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 		}()
 		err := body(ctx)
 		c.mu.Lock()
-		c.running = false
-		c.cancel = nil
+		c.finishGuardedTurnLocked()
 		c.mu.Unlock()
-		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: explainError(err)})
+		c.emit(event.Event{Kind: event.TurnDone, Err: explainError(err)})
 	}()
 }
 
@@ -442,6 +500,54 @@ func (c *Controller) Send(input string) {
 // complexity score.
 func (c *Controller) SendWithRaw(input, raw string) {
 	c.runGuarded(func(ctx context.Context) error { return c.runGoalLoopWithRaw(ctx, input, raw) })
+}
+
+// StartSkill starts one slash-invoked skill as a top-level turn. Inline skills
+// run in the main loop; runAs=subagent skills execute via the configured child
+// runner and emit only their final answer back into the parent session.
+func (c *Controller) StartSkill(input string, sk skill.Skill, args string) {
+	if sk.RunAs != skill.RunSubagent {
+		c.runGuarded(func(ctx context.Context) error {
+			rendered := skill.Render(sk, args)
+			return c.runTurnWithRaw(ctx, rendered, rendered)
+		})
+		return
+	}
+	if !c.subagentCanRunInBackground(sk) {
+		c.runGuarded(func(ctx context.Context) error {
+			return c.runForegroundSubagentTurn(ctx, input, sk, args)
+		})
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		meta := c.newSubagentIdentity(sk.Name)
+		run := c.registerSubagent(meta.ID, meta.Skill, meta.Alias, input, args, cancel)
+		c.emit(event.Event{Kind: event.TurnStarted, Subagent: &event.Subagent{ID: meta.ID, Skill: meta.Skill, Alias: meta.Alias, State: event.SubagentRunning}})
+		answer, err := c.runSlashSubagentTurn(ctx, input, sk, args, meta)
+		c.finalizeSubagent(run, answer, err)
+		state := c.subagentState(meta.ID)
+		if state == "" {
+			state = event.SubagentCompleted
+		}
+		emitErr := err
+		sub := &event.Subagent{ID: meta.ID, Skill: meta.Skill, Alias: meta.Alias, State: state}
+		if state == event.SubagentCanceled {
+			if reason, blocked := subagentHookBlockedReason(err); blocked {
+				sub.Error = reason
+			} else {
+				sub.Error = i18n.M.SubagentCanceledByUser
+				emitErr = context.Canceled
+			}
+		} else if err != nil {
+			sub.Error = err.Error()
+		}
+		if state == event.SubagentCompleted && strings.TrimSpace(answer) != "" {
+			c.emit(event.Event{Kind: event.Message, Text: answer, Subagent: sub})
+		}
+		c.emit(event.Event{Kind: event.TurnDone, Err: emitErr, Subagent: sub})
+	}()
 }
 
 // planApprovalTool is the Tool name on the ApprovalRequest the controller emits
@@ -701,6 +807,107 @@ func (c *Controller) stopGoal(status string) {
 	c.mu.Unlock()
 }
 
+func (c *Controller) runForegroundSubagentTurn(ctx context.Context, input string, sk skill.Skill, args string) error {
+	c.maybeSessionStart(ctx)
+	startMessages := c.messageCount()
+	defer c.snapshotActivityIfChanged(startMessages)
+	c.beginCheckpoint(input)
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	meta := c.newSubagentIdentity(sk.Name)
+	run := c.registerSubagent(meta.ID, meta.Skill, meta.Alias, input, args, cancel)
+
+	c.emit(event.Event{Kind: event.TurnStarted, Subagent: &event.Subagent{ID: meta.ID, Skill: meta.Skill, Alias: meta.Alias, State: event.SubagentRunning}})
+	answer, err := c.runSlashSubagentTurn(subCtx, input, sk, args, meta)
+	c.finalizeSubagent(run, answer, err)
+	state := c.subagentState(meta.ID)
+	if state == "" {
+		state = event.SubagentCompleted
+	}
+	emitErr := err
+	returnErr := err
+	sub := &event.Subagent{ID: meta.ID, Skill: meta.Skill, Alias: meta.Alias, State: state}
+	if state == event.SubagentCanceled {
+		if reason, blocked := subagentHookBlockedReason(err); blocked {
+			sub.Error = reason
+			returnErr = nil
+		} else {
+			sub.Error = i18n.M.SubagentCanceledByUser
+			emitErr = context.Canceled
+			returnErr = context.Canceled
+		}
+	} else if err != nil {
+		sub.Error = err.Error()
+	}
+	if state == event.SubagentCompleted && strings.TrimSpace(answer) != "" {
+		c.emit(event.Event{Kind: event.Message, Text: answer, Subagent: sub})
+	}
+	c.emit(event.Event{Kind: event.TurnDone, Err: emitErr, Subagent: sub})
+	return returnErr
+}
+
+func (c *Controller) subagentPreEditHook() func(diff.Change) {
+	return func(ch diff.Change) {
+		if c.cp != nil {
+			c.cp.Snapshot(ch)
+		}
+	}
+}
+
+func (c *Controller) runSlashSubagentTurn(ctx context.Context, input string, sk skill.Skill, task string, meta subagentIdentity) (string, error) {
+	if c.skillRunner == nil {
+		return "", fmt.Errorf("/%s is runAs=subagent but no subagent runner is configured in this session", sk.Name)
+	}
+	c.mu.Lock()
+	plan := c.planMode
+	c.mu.Unlock()
+	task = c.Compose(task)
+	var stopAnswer string
+	if c.hooks.Enabled() {
+		c.mu.Lock()
+		c.turn++
+		turn := c.turn
+		c.mu.Unlock()
+		if block, msg := c.hooks.PromptSubmit(ctx, input, turn); block {
+			c.subagentNotice(meta, event.SubagentCanceled)
+			return "", newSubagentHookBlockedError(msg)
+		}
+		defer func() { c.hooks.Stop(ctx, stopAnswer, turn) }()
+	}
+	c.subagentNotice(meta, event.SubagentRunning)
+	childSink := c.subagentSink(meta)
+	var gate skill.Gate
+	var asker skill.Asker
+	var preEditHook func(diff.Change)
+	if !c.subagentCanRunInBackground(sk) {
+		gate = permission.NewGate(c.policy, gateApprover{c})
+		asker = c
+		preEditHook = c.subagentPreEditHook()
+	}
+	ctx = agent.WithCallContext(ctx, meta.ID, childSink, asker)
+	ctx = agent.WithPlanModeContext(ctx, plan)
+	answer, err := c.skillRunner(ctx, sk, task, skill.SubagentRunContext{
+		Sink:        childSink,
+		Gate:        gate,
+		Asker:       asker,
+		PreEditHook: preEditHook,
+	})
+	stopAnswer = answer
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return "", err
+		}
+		c.subagentNotice(meta, event.SubagentFailed)
+		return "", err
+	}
+	c.subagentNotice(meta, event.SubagentCompleted)
+	return answer, nil
+}
+
+func (c *Controller) SubagentRunsInBackground(sk skill.Skill) bool {
+	return sk.RunAs == skill.RunSubagent && c.subagentCanRunInBackground(sk)
+}
+
 // lastAssistantText returns the content of the most recent assistant message with
 // non-empty text — the model's final answer for the turn (its plan, in plan mode).
 func lastAssistantText(msgs []provider.Message) string {
@@ -809,7 +1016,7 @@ func (c *Controller) submit(input, display string) {
 		// Read-only management verbs (/model /memory /skills /hooks /mcp) emit a
 		// listing Notice, so Submit-based frontends (desktop, HTTP) get them with
 		// no extra wiring. (The chat TUI handles these itself with richer output.)
-		fields := strings.Fields(trimmed)
+		fields := slashFields(trimmed)
 		switch fields[0] {
 		case "/tree":
 			c.notice(c.BranchTreeText())
@@ -857,10 +1064,15 @@ func (c *Controller) submit(input, display string) {
 			})
 			return
 		}
-		if sent, ok := c.RunSkill(trimmed); ok {
-			c.runGuarded(func(ctx context.Context) error {
-				return c.runGoalLoopWithRawDisplay(ctx, sent, sent, display)
-			})
+		if sk, args, ok := c.ResolveSkill(trimmed); ok {
+			if sk.RunAs == skill.RunSubagent {
+				c.StartSkill(trimmed, sk, args)
+			} else {
+				rendered := skill.Render(sk, args)
+				c.runGuarded(func(ctx context.Context) error {
+					return c.runGoalLoopWithRawDisplay(ctx, rendered, rendered, display)
+				})
+			}
 			return
 		}
 		c.notice("unknown command: " + trimmed)
@@ -1035,7 +1247,159 @@ func (c *Controller) runRefTurnWithRefs(input, refLine, display string) {
 
 // notice emits an informational Notice event.
 func (c *Controller) notice(text string) {
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
+	c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: text})
+}
+
+type subagentIdentity struct {
+	ID    string
+	Skill string
+	Alias string
+}
+
+var subagentEnglishNicknames = [...]string{
+	"Alex", "Avery", "Blair", "Casey", "Drew", "Eden", "Ellis", "Emery",
+	"Finley", "Gray", "Harper", "Hayden", "Jamie", "Jordan", "Kai", "Logan",
+	"Morgan", "Noel", "Parker", "Quinn", "Reese", "Remy", "Riley", "Robin",
+	"Rowan", "Sage", "Sam", "Sky", "Taylor", "Toby", "Devon", "Cameron",
+}
+
+var subagentChineseNicknames = [...]string{
+	"小张", "小王", "小李", "小赵", "小刘", "小陈", "小杨", "小黄",
+	"小吴", "小周", "小徐", "小孙", "小胡", "小朱", "小高", "小林",
+	"小何", "小郭", "小马", "小罗", "小郑", "小梁", "小谢", "小宋",
+	"小唐", "小许", "小邓", "小韩", "小冯", "小曹", "小彭", "小董",
+}
+
+func (c *Controller) newSubagentIdentity(skillName string) subagentIdentity {
+	id, err := newSubagentID()
+	if err != nil {
+		c.mu.Lock()
+		c.nextID++
+		fallback := c.nextID
+		c.mu.Unlock()
+		id = fmt.Sprintf("slash-subagent-%d", fallback)
+	}
+	return subagentIdentity{
+		ID:    id,
+		Skill: skillName,
+		Alias: localizedSubagentAlias(skillName, id),
+	}
+}
+
+func (c *Controller) subagentNotice(meta subagentIdentity, state event.SubagentState) {
+	textState := SubagentStateText(state)
+	if state == event.SubagentCompleted {
+		textState = i18n.M.SubagentNoticeCompleted
+	}
+	alias := strings.TrimSpace(meta.Alias)
+	if alias == "" {
+		alias = meta.Skill
+	}
+	text := fmt.Sprintf("[%s] %s (/%s · %s) %s", i18n.M.SkillPickerSubagent, alias, meta.Skill, meta.ID, textState)
+	c.emit(event.Event{
+		Kind:  event.Notice,
+		Level: event.LevelInfo,
+		Text:  text,
+		Subagent: &event.Subagent{
+			ID:    meta.ID,
+			Skill: meta.Skill,
+			Alias: alias,
+			State: state,
+		},
+	})
+}
+
+func (c *Controller) subagentSink(meta subagentIdentity) event.Sink {
+	return event.FuncSink(func(e event.Event) {
+		e.Subagent = &event.Subagent{
+			ID: meta.ID, Skill: meta.Skill, Alias: meta.Alias,
+			State: event.SubagentRunning,
+		}
+		c.recordSubagentEvent(meta.ID, e)
+		c.emit(e)
+	})
+}
+
+func (c *Controller) recordSubagentEvent(id string, e event.Event) {
+	detail := SubagentEvent{Kind: e.Kind}
+	switch e.Kind {
+	case event.Reasoning, event.Text, event.Message, event.Notice, event.Phase:
+		detail.Text = e.Text
+	case event.Usage:
+		if e.Usage != nil {
+			detail.Text = agent.FormatUsageLine(e.Usage, e.Pricing, e.CacheDiagnostics)
+		}
+	case event.ToolDispatch:
+		if e.Tool.Partial {
+			return
+		}
+		detail.Tool = e.Tool.Name
+		detail.Text = e.Tool.Args
+	case event.ToolResult:
+		detail.Tool = e.Tool.Name
+		if e.Tool.Err != "" {
+			detail.Error = e.Tool.Err
+		}
+		detail.Text = e.Tool.Output
+	case event.TurnDone:
+		if e.Err != nil {
+			detail.Error = e.Err.Error()
+		}
+	default:
+		return
+	}
+	c.appendSubagentEvent(id, detail)
+}
+
+func (c *Controller) subagentCanRunInBackground(sk skill.Skill) bool {
+	if c.reg == nil {
+		return false
+	}
+	excluded := map[string]bool{}
+	for _, name := range agent.SubagentMetaTools() {
+		excluded[name] = true
+	}
+	names := sk.AllowedTools
+	if len(names) == 0 {
+		names = c.reg.Names()
+	}
+	resolved := 0
+	for _, name := range names {
+		if excluded[name] {
+			continue
+		}
+		tl, ok := c.reg.Get(name)
+		if !ok {
+			return false
+		}
+		resolved++
+		if !tl.ReadOnly() {
+			return false
+		}
+	}
+	return resolved > 0
+}
+
+func localizedSubagentAlias(skillName, id string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(skillName))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(id))
+	sum := h.Sum32()
+	if i18n.M == i18n.Chinese {
+		return subagentChineseNicknames[int(sum)%len(subagentChineseNicknames)]
+	}
+	return subagentEnglishNicknames[int(sum)%len(subagentEnglishNicknames)]
+}
+
+func newSubagentID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // Run executes a turn synchronously, returning the agent's error. Used by the
@@ -1189,7 +1553,7 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 	c.asks[id] = pendingAsk{questions: questions, reply: reply}
 	c.mu.Unlock()
 
-	c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: id, Questions: questions}})
+	c.emit(event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: id, Questions: questions}})
 
 	select {
 	case ans := <-reply:
@@ -1434,7 +1798,7 @@ func (c *Controller) Checkpoints() []checkpoint.Meta {
 // returned error — e.g. the desktop bridge's .catch — still shows the user why
 // the rewind did nothing) and returns it.
 func (c *Controller) rewindFail(err error) error {
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: err.Error()})
+	c.emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: err.Error()})
 	return err
 }
 
@@ -1461,7 +1825,7 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		if err != nil {
 			return c.rewindFail(fmt.Errorf("rewind code: %w", err))
 		}
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+		c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: fmt.Sprintf("rewound code to turn %d — %d file(s) restored, %d removed", turn, len(written), len(deleted))})
 	}
 	if scope == RewindConversation || scope == RewindBoth {
@@ -1487,7 +1851,7 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		if err := c.Snapshot(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+		c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: fmt.Sprintf("rewound conversation to turn %d", turn)})
 	}
 	return nil
@@ -1565,7 +1929,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		c.mu.Unlock()
 		c.rebindCheckpoints(newPath)
 	}
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+	c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
 	return newPath, nil
 }
@@ -1622,7 +1986,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	c.sessionPath = newPath
 	c.mu.Unlock()
 	c.rebindCheckpoints(newPath)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+	c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
 	return newPath, nil
 }
@@ -1668,7 +2032,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	c.sessionPath = match.Path
 	c.mu.Unlock()
 	c.rebindCheckpoints(match.Path)
-	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+	c.emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
 	return match, nil
 }
@@ -2562,9 +2926,9 @@ func (c *Controller) seedPlanTodos(plan string) string {
 		return ""
 	}
 	t := event.Tool{ID: "plan-seed", Name: "todo_write", Args: args, ReadOnly: true}
-	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
+	c.emit(event.Event{Kind: event.ToolDispatch, Tool: t})
 	t.Output = "task list seeded from the approved plan"
-	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
+	c.emit(event.Event{Kind: event.ToolResult, Tool: t})
 	return args
 }
 
@@ -2577,9 +2941,9 @@ func (c *Controller) completePlanTodos(args string) {
 		return
 	}
 	t := event.Tool{ID: "plan-seed", Name: "todo_write", Args: done, ReadOnly: true}
-	c.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
+	c.emit(event.Event{Kind: event.ToolDispatch, Tool: t})
 	t.Output = "approved plan finished"
-	c.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
+	c.emit(event.Event{Kind: event.ToolResult, Tool: t})
 }
 
 // PlanTodosJSON parses an approved plan's markdown into todo_write-shaped args
@@ -2768,7 +3132,7 @@ func (c *Controller) requestApproval(ctx context.Context, tool, subject string) 
 	c.approvals[id] = pendingApproval{tool: tool, subject: subject, autoDrain: c.autoApprovalWouldAllowLocked(tool, subject), reply: reply}
 	c.mu.Unlock()
 
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject}})
+	c.emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject}})
 	// The agent now needs the user's attention; a Notification hook can ping an
 	// external channel (desktop notice, phone) while the run blocks on the reply.
 	if subject != "" {

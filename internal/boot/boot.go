@@ -471,7 +471,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// as system prompt, a tool set scoped to the skill's allowed-tools (minus the
 	// task/skill meta-tools, to bar recursion), and an optional per-skill model.
 	// Its tool activity nests under the invoking call, like `task`.
-	skillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
+	skillRunner := func(sctx context.Context, sk skill.Skill, task string, runCtx skill.SubagentRunContext) (string, error) {
 		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
 		modelRef := subagentModelRef(cfg, sk)
 		effortRef := subagentEffortRef(cfg, sk)
@@ -483,7 +483,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			prov, price, ctxWin = p, pr, cw
 		}
 		subReg := agent.FilterRegistry(reg, sk.AllowedTools, agent.SubagentMetaTools()...)
-		continueFrom, forkFrom := strings.TrimSpace(runOpts.ContinueFrom), strings.TrimSpace(runOpts.ForkFrom)
+		continueFrom, forkFrom := strings.TrimSpace(runCtx.ContinueFrom), strings.TrimSpace(runCtx.ForkFrom)
 		if continueFrom != "" && forkFrom != "" {
 			return "", fmt.Errorf("continue_from and fork_from are mutually exclusive")
 		}
@@ -532,19 +532,38 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				steps = 5
 			}
 		}
-		answer, err := agent.RunSubAgentWithSession(sctx, prov, subReg, run.Session, task, agent.Options{
+		sink := runCtx.Sink
+		if sink == nil {
+			sink = agent.NestedSink(sctx, event.Discard)
+		}
+		var gate agent.Gate = headlessGate
+		if runCtx.Gate != nil {
+			gate = runCtx.Gate
+		}
+		answer, err := agent.RunSubAgentWithSessionConfig(sctx, prov, subReg, run.Session, task, agent.Options{
 			MaxSteps:      steps,
 			Temperature:   cfg.Agent.Temperature,
 			Pricing:       price,
-			Gate:          headlessGate,
+			Gate:          gate,
+			ProjectChecks: projectChecks,
 			ContextWindow: ctxWin,
 			ArchiveDir:    config.ArchiveDir(),
-		}, agent.NestedSink(sctx, event.Discard))
+		}, agent.SubagentRunConfig{
+			Sink:        sink,
+			PlanMode:    agent.PlanModeContext(sctx),
+			Asker:       runCtx.Asker,
+			PreEditHook: runCtx.PreEditHook,
+		})
 		if err != nil {
-			return "", errors.Join(err, subagentStore.SaveFailed(run))
+			if subagentStore != nil {
+				return "", errors.Join(err, subagentStore.SaveFailed(run))
+			}
+			return "", err
 		}
-		if err := subagentStore.SaveCompleted(run); err != nil {
-			return "", errors.Join(err, subagentStore.SaveFailed(run))
+		if subagentStore != nil {
+			if err := subagentStore.SaveCompleted(run); err != nil {
+				return "", errors.Join(err, subagentStore.SaveFailed(run))
+			}
 		}
 		return agent.FormatSubagentResult(answer, run.Ref, false), nil
 	}
@@ -705,6 +724,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	ctrlOpts := control.Options{
 		Runner:        runner,
 		Executor:      executor,
+		SkillRunner:   skillRunner,
 		Sink:          sink,
 		Policy:        policy,
 		Label:         label,

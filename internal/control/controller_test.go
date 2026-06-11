@@ -41,7 +41,10 @@ func (r handoffRunner) Run(_ context.Context, input string) error {
 	return nil
 }
 
-type fakeControlTool struct{ name string }
+type fakeControlTool struct {
+	name   string
+	writer bool
+}
 
 func (t fakeControlTool) Name() string { return t.name }
 func (fakeControlTool) Description() string {
@@ -53,7 +56,7 @@ func (fakeControlTool) Schema() json.RawMessage {
 func (fakeControlTool) Execute(context.Context, json.RawMessage) (string, error) {
 	return "", nil
 }
-func (fakeControlTool) ReadOnly() bool { return true }
+func (t fakeControlTool) ReadOnly() bool { return !t.writer }
 
 func TestNewTreatsTypedNilSinkAsDiscard(t *testing.T) {
 	var sink *typedNilControllerSink
@@ -253,6 +256,11 @@ func TestDisconnectMCPServerRemovesLazyPlaceholder(t *testing.T) {
 
 func TestRemoveMCPServerRemovesUnconnectedLazyPlaceholder(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Chdir(dir)
 	if err := os.WriteFile("reasonix.toml", []byte(`
 [[plugins]]

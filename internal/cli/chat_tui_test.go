@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,8 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
+	"reasonix/internal/tool"
 )
 
 type blockingTurnRunner struct{ started chan struct{} }
@@ -37,6 +40,16 @@ func (r *blockingTurnRunner) Run(ctx context.Context, _ string) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
+
+type fakeChatReadOnlyTool struct{ name string }
+
+func (t fakeChatReadOnlyTool) Name() string          { return t.name }
+func (fakeChatReadOnlyTool) Description() string     { return "fake" }
+func (fakeChatReadOnlyTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (fakeChatReadOnlyTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "", nil
+}
+func (fakeChatReadOnlyTool) ReadOnly() bool { return true }
 
 type recordingTurnRunner struct {
 	inputs []string
@@ -736,6 +749,80 @@ func TestAnswerTextStartingWithBracketStaysInAnswer(t *testing.T) {
 		if m.pending.String() != txt {
 			t.Errorf("answer text should buffer verbatim, got %q want %q", m.pending.String(), txt)
 		}
+	}
+}
+
+func TestBackgroundSubagentKeepsComposerInteractive(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeChatReadOnlyTool{name: "read_file"})
+
+	m := newTestChatTUI()
+	m.input.Focus()
+	m.ctrl = control.New(control.Options{
+		Registry: reg,
+		SkillRunner: func(context.Context, skill.Skill, string, skill.SubagentRunContext) (string, error) {
+			return "child answer", nil
+		},
+	})
+	t.Cleanup(func() {
+		if m.ctrl != nil {
+			m.ctrl.Close()
+		}
+	})
+
+	m.startSkillTurn("/只读测试员 看看", skill.Skill{
+		Name:         "只读测试员",
+		RunAs:        skill.RunSubagent,
+		AllowedTools: []string{"read_file"},
+	}, "看看")
+
+	if m.state == tuiRunning {
+		t.Fatal("background subagent should not switch the main TUI into running state")
+	}
+	if m.bubblePending {
+		t.Fatal("background subagent launch should not occupy the pending bubble slot")
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'h', Text: "h"}))
+	m2, ok := updated.(chatTUI)
+	if !ok {
+		t.Fatalf("Update returned %T, want chatTUI", updated)
+	}
+	if got := m2.input.Value(); got != "h" {
+		t.Fatalf("composer should stay editable while subagent runs, got %q", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runs := m.ctrl.ListSubagents()
+		if len(runs) == 1 && runs[0].State != event.SubagentRunning {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background subagent did not settle before test exit")
+}
+
+func TestSubagentEventDoesNotConfirmMainTurnBubble(t *testing.T) {
+	m := newTestChatTUI()
+	m.bubblePending = true
+	m.pendingRestore = "main turn still waiting"
+
+	m.ingestEvent(event.Event{
+		Kind: event.Notice,
+		Subagent: &event.Subagent{
+			ID:    "run-123",
+			Skill: "只读测试员",
+			Alias: "Blair",
+			State: event.SubagentRunning,
+		},
+	})
+
+	if !m.bubblePending {
+		t.Fatal("subagent events should not confirm an unrelated pending main turn")
+	}
+	if got := m.pendingRestore; got != "main turn still waiting" {
+		t.Fatalf("pending restore should remain untouched, got %q", got)
 	}
 }
 

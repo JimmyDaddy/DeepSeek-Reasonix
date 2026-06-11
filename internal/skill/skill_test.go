@@ -154,6 +154,23 @@ func TestConventionDirsDiscovered(t *testing.T) {
 	}
 }
 
+func TestIsAgentPathAcceptsSlashVariants(t *testing.T) {
+	cases := []string{
+		filepath.Join("tmp", ".claude", "agents", "scout.md"),
+		"tmp/.claude/agents/scout.md",
+		`tmp\.claude\agents\scout.md`,
+		`C:\tmp\.reasonix\agents\review.md`,
+	}
+	for _, tc := range cases {
+		if !isAgentPath(tc) {
+			t.Errorf("isAgentPath(%q) = false, want true", tc)
+		}
+	}
+	if isAgentPath(filepath.Join("tmp", ".claude", "skills", "scout.md")) {
+		t.Fatal("skills directory should not be treated as agent path")
+	}
+}
+
 func TestExcludedPathsHideConventionRoots(t *testing.T) {
 	home := t.TempDir()
 	writeSkill(t, home, ".reasonix/skills/keep.md", "---\ndescription: keep\n---\nb")

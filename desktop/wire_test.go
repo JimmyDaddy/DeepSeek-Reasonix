@@ -163,6 +163,27 @@ func TestToWireTurnDoneNoError(t *testing.T) {
 	}
 }
 
+func TestToWireOmitsSubagentForDesktop(t *testing.T) {
+	e := event.Event{
+		Kind: event.Message,
+		Text: "child answer",
+		Subagent: &event.Subagent{
+			ID:    "sub-1",
+			Skill: "scout",
+			Alias: "One",
+			State: event.SubagentCompleted,
+		},
+	}
+	w := toWire(e)
+	if b, err := json.Marshal(w); err != nil {
+		t.Fatalf("marshal: %v", err)
+	} else if string(b) == "" {
+		t.Fatal("marshal produced empty payload")
+	} else if string(b) != "" && jsonContainsKey(b, "subagent") {
+		t.Fatalf("desktop wire should omit subagent payload, got %s", b)
+	}
+}
+
 // --- kindNames completeness ---
 
 func TestToWireSteer(t *testing.T) {
@@ -198,4 +219,13 @@ func TestWireEventJSON(t *testing.T) {
 	if decoded.Kind != "text" || decoded.Text != "hello" {
 		t.Errorf("round-trip = %+v", decoded)
 	}
+}
+
+func jsonContainsKey(b []byte, key string) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
 }

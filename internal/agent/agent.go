@@ -64,11 +64,33 @@ type callContext struct {
 	asker    Asker
 }
 
+type planModeContextKey struct{}
+
 // withCallContext stamps ctx with the executing call's ID, the agent's sink, and
 // the asker. executeOne sets this before every Execute; `task` reads it (via
 // CallContext) to nest sub-agent events, and `ask` reads the asker to prompt.
 func withCallContext(ctx context.Context, parentID string, sink event.Sink, asker Asker) context.Context {
 	return context.WithValue(ctx, callContextKey{}, callContext{parentID: parentID, sink: sink, asker: asker})
+}
+
+// WithCallContext stamps ctx with a synthetic call identity, sink, and asker.
+// Controller-driven subagent runs use it so nested tool activity can be shown
+// like a regular child call even when no parent tool Execute is in flight.
+func WithCallContext(ctx context.Context, parentID string, sink event.Sink, asker Asker) context.Context {
+	return withCallContext(ctx, parentID, sink, asker)
+}
+
+// WithPlanModeContext stamps ctx with whether a spawned child run should
+// inherit the parent's plan-mode read-only gate.
+func WithPlanModeContext(ctx context.Context, enabled bool) context.Context {
+	return context.WithValue(ctx, planModeContextKey{}, enabled)
+}
+
+// PlanModeContext reports whether a spawned child run should inherit the
+// parent's plan-mode read-only gate.
+func PlanModeContext(ctx context.Context) bool {
+	enabled, _ := ctx.Value(planModeContextKey{}).(bool)
+	return enabled
 }
 
 // CallContext returns the executing call's ID, the agent's sink, and the asker,

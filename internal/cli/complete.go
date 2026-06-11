@@ -73,6 +73,7 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/model", insert: "/model ", hint: i18n.M.CmdModel, descend: true},
 		{label: "/provider", insert: "/provider ", hint: i18n.M.CmdProvider, descend: true},
 		{label: "/skills", insert: "/skills", hint: i18n.M.CmdSkill},
+		{label: "/subagents", insert: "/subagents", hint: i18n.M.CmdSubagents},
 		{label: "/hooks", insert: "/hooks ", hint: i18n.M.CmdHooks, descend: true},
 		{label: "/paste-image", insert: "/paste-image", hint: i18n.M.CmdPasteImage},
 		{label: "/output-style", insert: "/output-style", hint: i18n.M.CmdOutputStyle},
@@ -187,6 +188,7 @@ func (m *chatTUI) slashArgData() control.ArgData {
 		data.DisabledSkills = m.ctrl.DisabledSkills()
 		data.ConfiguredMCP = m.ctrl.ConfiguredMCPNames()
 		data.DisconnectedMCP = m.ctrl.DisconnectedMCPNames()
+		data.Subagents = m.ctrl.ListSubagents()
 	}
 	if m.host != nil {
 		data.ServerNames = m.host.ServerNames()

@@ -2023,6 +2023,9 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 	if ctrl == nil {
 		return SlashArgsResult{Items: []SlashArgItem{}}
 	}
+	if isDesktopSubagentManagementPrefix(input) {
+		return SlashArgsResult{Items: []SlashArgItem{}, From: strings.LastIndexAny(input, " \t") + 1}
+	}
 	data := control.ArgData{
 		Skills:          ctrl.Skills(),
 		DisabledSkills:  ctrl.DisabledSkills(),
@@ -2052,6 +2055,11 @@ func (a *App) SlashArgs(input string) SlashArgsResult {
 		out.Items = append(out.Items, SlashArgItem{Label: it.Label, Insert: it.Insert, Hint: it.Hint, Descend: it.Descend})
 	}
 	return out
+}
+
+func isDesktopSubagentManagementPrefix(input string) bool {
+	trimmed := strings.TrimLeft(input, " \t")
+	return strings.HasPrefix(trimmed, "/subagents ")
 }
 
 // CapabilitiesView is the MCP & Skills drawer's data: connected/failed MCP

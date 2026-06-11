@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -77,6 +78,33 @@ func TestToWire(t *testing.T) {
 		w := toWire(event.Event{Kind: event.Steer, Text: "mid-turn guidance"})
 		if w.Kind != "steer" || w.Text != "mid-turn guidance" {
 			t.Errorf("steer = %+v", w)
+		}
+	})
+
+	t.Run("subagent payload", func(t *testing.T) {
+		w := toWire(event.Event{
+			Kind: event.Message,
+			Text: "child answer",
+			Subagent: &event.Subagent{
+				ID:    "sub-1",
+				Skill: "scout",
+				Alias: "One",
+				State: event.SubagentCompleted,
+			},
+		})
+		if w.Subagent == nil || w.Subagent.ID != "sub-1" || w.Subagent.Skill != "scout" || w.Subagent.Alias != "One" || w.Subagent.State != string(event.SubagentCompleted) {
+			t.Fatalf("subagent wire = %+v", w.Subagent)
+		}
+		b, err := json.Marshal(w)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(b, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, ok := decoded["subagent"]; !ok {
+			t.Fatalf("serve wire should expose subagent payload, got %s", b)
 		}
 	})
 }

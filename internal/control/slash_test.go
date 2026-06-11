@@ -1,6 +1,7 @@
 package control
 
 import (
+	"path/filepath"
 	"testing"
 
 	"reasonix/internal/skill"
@@ -25,7 +26,11 @@ func has(items []SlashItem, label string) bool {
 
 func TestSlashArgItems(t *testing.T) {
 	data := ArgData{
-		Skills:          []skill.Skill{{Name: "explore", Scope: skill.ScopeBuiltin}, {Name: "review", Scope: skill.ScopeBuiltin}},
+		Skills: []skill.Skill{
+			{Name: "explore", Scope: skill.ScopeBuiltin},
+			{Name: "review", Scope: skill.ScopeBuiltin},
+			{Name: "scout", Scope: skill.ScopeProject, RunAs: skill.RunSubagent, Path: filepath.Join("tmp", ".claude", "agents", "scout.md")},
+		},
 		DisabledSkills:  []skill.Skill{{Name: "security-review", Scope: skill.ScopeBuiltin}},
 		ServerNames:     []string{"fs", "git"},
 		ConfiguredMCP:   []string{"fs", "linear"},
@@ -34,6 +39,7 @@ func TestSlashArgItems(t *testing.T) {
 		CurrentModel:    "deepseek-flash/deepseek-v4-flash",
 		ProviderNames:   []string{"deepseek-flash", "deepseek-pro", "custom"},
 		CurrentProvider: "deepseek-flash",
+		Subagents:       []SubagentSummary{{ID: "run-1", Skill: "scout", Alias: "Ellis", State: "running"}},
 	}
 
 	// /skills subcommands
@@ -128,6 +134,15 @@ func TestSlashArgItems(t *testing.T) {
 	if !has(items, "list") || !has(items, "trust") {
 		t.Errorf("/hooks should offer list/trust; got %v", labelsOf(items))
 	}
+	// /subagents
+	items, _ = SlashArgItems("/subagents ", data)
+	if has(items, "list") || !has(items, "cancel") || !has(items, "clear") {
+		t.Errorf("/subagents should emphasize cancel/clear without list; got %v", labelsOf(items))
+	}
+	items, _ = SlashArgItems("/subagents cancel ", data)
+	if !has(items, "Ellis") {
+		t.Errorf("/subagents cancel should list retained runs; got %v", labelsOf(items))
+	}
 	// /effort
 	items, _ = SlashArgItems("/effort ", data)
 	if !has(items, "auto") || !has(items, "high") || !has(items, "max") || has(items, "off") {
@@ -146,6 +161,9 @@ func TestSlashArgItems(t *testing.T) {
 	// a non-structured command yields nothing
 	if items, _ := SlashArgItems("/help ", data); len(items) != 0 {
 		t.Errorf("/help should have no arg items; got %v", labelsOf(items))
+	}
+	if items, _ := SlashArgItems("/agents ", data); len(items) != 0 {
+		t.Errorf("/agents should have no arg items once removed; got %v", labelsOf(items))
 	}
 	// a fully-typed terminal subcommand offers nothing (no lingering no-op) so the
 	// caller can submit instead of "accepting" a no-op — the /skills list bug.

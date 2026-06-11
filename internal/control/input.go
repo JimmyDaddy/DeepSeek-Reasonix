@@ -4,11 +4,25 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"unicode"
 
+	"reasonix/internal/command"
 	"reasonix/internal/skill"
 )
 
 var reComposeBlock = regexp.MustCompile(`(?s)^\s*<(?:memory-update|background-jobs)>.*?</(?:memory-update|background-jobs)>\s*\n`)
+
+func slashFields(input string) []string {
+	return command.TokenizeArgs(strings.TrimSpace(input))
+}
+
+func rawSlashArgs(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if i := strings.IndexFunc(trimmed, unicode.IsSpace); i >= 0 {
+		return strings.TrimSpace(trimmed[i+1:])
+	}
+	return ""
+}
 
 // PlanModeMarker is prepended to every user turn while plan mode is on. It rides
 // in the user message (not the system prompt or tools), so the cache-stable
@@ -203,7 +217,7 @@ func ParseGoalCommand(input string) (GoalCommand, bool) {
 // commands, returning the rendered prompt to send (found=false when no command
 // matches). It does not apply the plan-mode marker — call Compose for that.
 func (c *Controller) CustomCommand(input string) (sent string, found bool) {
-	fields := strings.Fields(input)
+	fields := slashFields(input)
 	if len(fields) == 0 {
 		return "", false
 	}
@@ -216,22 +230,30 @@ func (c *Controller) CustomCommand(input string) (sent string, found bool) {
 	return "", false
 }
 
-// RunSkill resolves a "/<name> args…" line against the loaded skills, returning
-// the skill's rendered body to send as a turn (found=false when no skill
-// matches). Invoking a skill by slash always inlines its body — the model reads
-// and follows the playbook in the main loop; a subagent skill's isolation is
-// only engaged when the model calls it via run_skill / the dedicated tool. The
-// caller applies Compose for plan-mode/memory framing.
-func (c *Controller) RunSkill(input string) (sent string, found bool) {
-	fields := strings.Fields(input)
+// ResolveSkill resolves a "/<name> args…" line against the loaded skills.
+// args preserves the raw text after the skill name so runAs=subagent skills can
+// receive an exact task string.
+func (c *Controller) ResolveSkill(input string) (sk skill.Skill, args string, found bool) {
+	fields := slashFields(input)
 	if len(fields) == 0 {
-		return "", false
+		return skill.Skill{}, "", false
 	}
 	name := strings.TrimPrefix(fields[0], "/")
 	if sk, ok := c.skillByName(name); ok {
-		return skill.Render(sk, strings.Join(fields[1:], " ")), true
+		return sk, rawSlashArgs(input), true
 	}
-	return "", false
+	return skill.Skill{}, "", false
+}
+
+// RunSkill renders a resolved slash skill for inline execution in the main
+// loop. Callers must branch on ResolveSkill first when runAs=subagent needs the
+// isolated child-loop path.
+func (c *Controller) RunSkill(input string) (sent string, found bool) {
+	sk, args, found := c.ResolveSkill(input)
+	if !found {
+		return "", false
+	}
+	return skill.Render(sk, args), true
 }
 
 func (c *Controller) skillByName(name string) (skill.Skill, bool) {
@@ -254,7 +276,7 @@ func (c *Controller) MCPPrompt(ctx context.Context, input string) (sent string, 
 	if c.host == nil {
 		return "", false, nil
 	}
-	fields := strings.Fields(input)
+	fields := slashFields(input)
 	if len(fields) == 0 {
 		return "", false, nil
 	}

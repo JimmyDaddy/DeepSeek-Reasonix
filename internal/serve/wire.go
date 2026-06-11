@@ -12,6 +12,7 @@ type wireEvent struct {
 	Text       string          `json:"text,omitempty"`
 	Reasoning  string          `json:"reasoning,omitempty"`
 	Level      string          `json:"level,omitempty"`
+	Subagent   *wireSubagent   `json:"subagent,omitempty"`
 	Tool       *wireTool       `json:"tool,omitempty"`
 	Usage      *wireUsage      `json:"usage,omitempty"`
 	Approval   *wireApproval   `json:"approval,omitempty"`
@@ -46,6 +47,14 @@ type wireAskQuestion struct {
 type wireAsk struct {
 	ID        string            `json:"id"`
 	Questions []wireAskQuestion `json:"questions"`
+}
+
+type wireSubagent struct {
+	ID    string `json:"id,omitempty"`
+	Skill string `json:"skill,omitempty"`
+	Alias string `json:"alias,omitempty"`
+	State string `json:"state,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 type wireProfile struct {
@@ -141,6 +150,15 @@ func toWireAsk(a event.Ask) *wireAsk {
 // toWire converts an event.Event into its JSON wire form.
 func toWire(e event.Event) wireEvent {
 	w := wireEvent{Kind: kindNames[e.Kind], Text: e.Text, Reasoning: e.Reasoning}
+	if e.Subagent != nil {
+		w.Subagent = &wireSubagent{
+			ID:    e.Subagent.ID,
+			Skill: e.Subagent.Skill,
+			Alias: e.Subagent.Alias,
+			State: string(e.Subagent.State),
+			Error: e.Subagent.Error,
+		}
+	}
 	switch e.Kind {
 	case event.Notice:
 		if e.Level == event.LevelWarn {

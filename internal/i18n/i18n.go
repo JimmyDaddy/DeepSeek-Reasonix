@@ -143,66 +143,117 @@ type Messages struct {
 
 	// slash command + sub-command descriptions shown in the menu (CLI and desktop
 	// share these via i18n.M, so both frontends localize identically).
-	CmdNew          string // /new
-	CmdClear        string // /clear
-	CmdCompact      string // /compact
-	CmdRewind       string // /rewind
-	CmdTree         string // /tree
-	CmdBranch       string // /branch
-	CmdSwitchBranch string // /switch
-	CmdResume       string // /resume
-	CmdModel        string // /model
-	CmdMemory       string // /memory
-	CmdGoal         string // /goal
-	CmdRemember     string // /remember
-	CmdForget       string // /forget
-	CmdMcp          string // /mcp
-	CmdHooks        string // /hooks
-	CmdPasteImage   string // /paste-image
-	CmdOutputStyle  string // /output-style
-	CmdTheme        string // /theme
-	CmdLanguage     string // /language
-	CmdSkill        string // /skills
-	CmdVerbose      string // /verbose
-	CmdSandbox      string // /sandbox
-	CmdEffort       string // /effort
-	CmdAutoPlan     string // /auto-plan
-	CmdHelp         string // /help
-	CmdTodo         string // /todo
-	CmdQuit         string // /quit (also accepts /exit as hidden alias)
-	ArgSkillList    string // /skills list
-	ArgSkillShow    string // /skills show
-	ArgSkillNew     string // /skills new
-	ArgSkillPaths   string // /skills paths
-	ArgMcpAdd       string // /mcp add
-	ArgMcpRemove    string // /mcp remove
-	ArgMcpList      string // /mcp list
-	ArgMcpConnected string // /mcp remove <server> tag
-	ArgHooksList    string // /hooks list
-	ArgHooksTrust   string // /hooks trust
-	ArgModelCurrent string // /model <ref> active tag
-	ArgEffortAuto   string // /effort auto
-	ArgEffortLow    string // /effort low
-	ArgEffortMedium string // /effort medium
-	ArgEffortHigh   string // /effort high
-	ArgEffortXHigh  string // /effort xhigh
-	ArgEffortMax    string // /effort max
-	ArgThemeCurrent string // /theme <style> active tag
-	ArgLanguageAuto string // /language auto
-	ArgLanguageEn   string // /language en
-	ArgLanguageZh   string // /language zh
+	CmdNew                     string // /new
+	CmdClear                   string // /clear
+	CmdCompact                 string // /compact
+	CmdRewind                  string // /rewind
+	CmdTree                    string // /tree
+	CmdBranch                  string // /branch
+	CmdSwitchBranch            string // /switch
+	CmdResume                  string // /resume
+	CmdModel                   string // /model
+	CmdMemory                  string // /memory
+	CmdGoal                    string // /goal
+	CmdRemember                string // /remember
+	CmdForget                  string // /forget
+	CmdMcp                     string // /mcp
+	CmdHooks                   string // /hooks
+	CmdPasteImage              string // /paste-image
+	CmdOutputStyle             string // /output-style
+	CmdTheme                   string // /theme
+	CmdLanguage                string // /language
+	CmdSkill                   string // /skills ("/skill" kept as a legacy alias)
+	CmdSubagents               string // /subagents
+	SubagentsTitle             string // /subagents picker title
+	SubagentTitle              string // /subagents detail title
+	CmdVerbose                 string // /verbose
+	CmdSandbox                 string // /sandbox
+	CmdEffort                  string // /effort
+	CmdAutoPlan                string // /auto-plan
+	CmdHelp                    string // /help
+	CmdTodo                    string // /todo
+	CmdQuit                    string // /quit (also accepts /exit as hidden alias)
+	ArgSkillList               string // /skills list
+	ArgSkillShow               string // /skills show
+	ArgSkillNew                string // /skills new
+	ArgSkillPaths              string // /skills paths
+	ArgMcpAdd                  string // /mcp add
+	ArgMcpRemove               string // /mcp remove
+	ArgMcpList                 string // /mcp list
+	ArgMcpConnected            string // /mcp remove <server> tag
+	ArgHooksList               string // /hooks list
+	ArgHooksTrust              string // /hooks trust
+	ArgSubagentsCancel         string // /subagents cancel
+	ArgSubagentsClear          string // /subagents clear
+	ArgSubagentsClearCompleted string // /subagents clear completed hint
+	ArgSubagentsClearFailed    string // /subagents clear failed hint
+	ArgSubagentsClearCanceled  string // /subagents clear canceled hint
+	ArgSubagentsClearAll       string // /subagents clear all hint
+	ArgModelCurrent            string // /model <ref> active tag
+	ArgEffortAuto              string // /effort auto
+	ArgEffortLow               string // /effort low
+	ArgEffortMedium            string // /effort medium
+	ArgEffortHigh              string // /effort high
+	ArgEffortXHigh             string // /effort xhigh
+	ArgEffortMax               string // /effort max
+	ArgThemeCurrent            string // /theme <style> active tag
+	ArgLanguageAuto            string // /language auto
+	ArgLanguageEn              string // /language en
+	ArgLanguageZh              string // /language zh
 
 	// management listing notices (the Submit path: desktop / HTTP frontends)
-	ListModelsHeaderFmt string // "models (active: %s)"
-	ListModelsHint      string // how to switch
-	ListMemoryHeader    string // "memory files"
-	ListMemoryNone      string // no memory docs
-	ListSkillsHeaderFmt string // "skills (%d)"
-	ListSkillsNone      string // no skills
-	ListHooksHeaderFmt  string // "hooks (%d active)"
-	ListHooksNone       string // no hooks
-	ListMcpHeader       string // "mcp servers"
-	ListMcpNone         string // no mcp servers
+	ListModelsHeaderFmt           string // "models (active: %s)"
+	ListModelsHint                string // how to switch
+	ListMemoryHeader              string // "memory files"
+	ListMemoryNone                string // no memory docs
+	ListSkillsHeaderFmt           string // "skills (%d)"
+	ListSkillsNone                string // no skills
+	ListHooksHeaderFmt            string // "hooks (%d active)"
+	ListHooksNone                 string // no hooks
+	ListMcpHeader                 string // "mcp servers"
+	ListMcpNone                   string // no mcp servers
+	SubagentsUsageCancel          string // /subagents cancel usage
+	SubagentsUsageClear           string // /subagents clear usage
+	SubagentsUsage                string // /subagents usage
+	SubagentNotFoundFmt           string // subagent not found: %s
+	SubagentCanceledFmt           string // canceled subagent %s
+	SubagentsClearedFmt           string // cleared %s subagents
+	SubagentsClearedAll           string // cleared all retained subagents
+	SubagentsNone                 string // no active or recent subagents
+	SubagentsTextHeaderFmt        string // subagents (%d)
+	SubagentsShowingFmt           string // showing %d of %d
+	SubagentsWindowFmt            string // showing %d-%d of %d
+	SubagentsFilterLabel          string // filter:
+	SubagentsFilterEditLabel      string // filter>
+	SubagentsFilterPlaceholder    string // type to filter alias / skill / state
+	SubagentsNoMatch              string // no matching subagents
+	SubagentsFilterExitHint       string // filter exit hint while empty
+	SubagentsFilterIdleHint       string // list hint when not editing
+	SubagentsFilterEditingHint    string // list hint when editing
+	SubagentIDFmt                 string // id %s
+	SubagentStartedUnknown        string // started unknown
+	SubagentStartedFmt            string // started %s
+	SubagentStartedEndedFmt       string // started %s · ended %s
+	SubagentErrorFmt              string // error %s
+	SubagentStateRunning          string // running
+	SubagentStateCompleted        string // completed
+	SubagentStateFailed           string // failed
+	SubagentStateCanceled         string // canceled
+	SubagentStateUnknown          string // unknown
+	SubagentNoticeCompleted       string // completed; final answer below
+	SubagentCanceledByUser        string // canceled by user
+	SubagentsClearAllLabel        string // all retained runs
+	SubagentNoEvents              string // no recorded child events yet
+	SubagentThinkingLabel         string // thinking label in retained transcripts
+	SubagentAnswerLabel           string // answer label in retained/embedded transcripts
+	SubagentToggleExpand          string // Ctrl-O expand
+	SubagentToggleCollapse        string // Ctrl-O collapse
+	SubagentWaitingForActivity    string // waiting for child activity
+	SubagentLinesOmittedFmt       string // collapsed transcript summary
+	SubagentDetailScrollFooterFmt string // scroll footer
+	SubagentDetailCancelSuffix    string // cancel suffix
+	SubagentDetailCloseCancelHint string // esc close + cancel
+	SubagentDetailCloseHint       string // esc close
 
 	// in-chat memory/model/rewind notices.
 	MemoryNone             string

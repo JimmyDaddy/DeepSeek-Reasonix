@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -530,6 +531,49 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 	if !strings.Contains(sys, "projskill") || !strings.Contains(sys, "explore") {
 		t.Fatalf("skill names missing from index:\n%s", sys)
+	}
+}
+
+func TestBuildWiresSubagentSkillRunnerIntoController(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[codegraph]
+enabled = false
+
+[agent]
+system_prompt = "BASE"
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	writeFile(t, dir, ".reasonix/skills/scout.md", `---
+description: a project subagent
+runAs: subagent
+allowed-tools: [read_file]
+---
+inspect carefully`)
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	field := reflect.ValueOf(ctrl).Elem().FieldByName("skillRunner")
+	if !field.IsValid() {
+		t.Fatal("controller missing skillRunner field")
+	}
+	if field.IsNil() {
+		t.Fatal("Build should wire a subagent skill runner into the controller")
 	}
 }
 
