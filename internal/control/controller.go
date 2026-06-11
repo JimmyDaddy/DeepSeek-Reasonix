@@ -861,7 +861,12 @@ func (c *Controller) runSlashSubagentTurn(ctx context.Context, input string, sk 
 	c.mu.Lock()
 	plan := c.planMode
 	c.mu.Unlock()
-	task = c.Compose(task)
+	background := c.subagentCanRunInBackground(sk)
+	if background {
+		task = c.composeWithoutParentDrains(task)
+	} else {
+		task = c.Compose(task)
+	}
 	var stopAnswer string
 	if c.hooks.Enabled() {
 		c.mu.Lock()
@@ -879,7 +884,7 @@ func (c *Controller) runSlashSubagentTurn(ctx context.Context, input string, sk 
 	var gate skill.Gate
 	var asker skill.Asker
 	var preEditHook func(diff.Change)
-	if !c.subagentCanRunInBackground(sk) {
+	if !background {
 		gate = permission.NewGate(c.policy, gateApprover{c})
 		asker = c
 		preEditHook = c.subagentPreEditHook()

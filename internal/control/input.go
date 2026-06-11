@@ -102,9 +102,9 @@ var syntheticPrefixes = []string{
 	"[Mid-turn steer queued by the user.",
 }
 
-// Compose applies the plan-mode marker to a turn's text when plan mode is on,
-// returning the message to actually send to the model. The frontend keeps
-// showing the raw text as the user bubble.
+// Compose applies controller-owned context to a parent turn's text, returning
+// the message to actually send to the model. The frontend keeps showing the raw
+// text as the user bubble.
 func (c *Controller) Compose(text string) string {
 	c.mu.Lock()
 	plan := c.planMode
@@ -114,12 +114,7 @@ func (c *Controller) Compose(text string) string {
 	c.pendingMemory = nil
 	c.mu.Unlock()
 
-	if strings.TrimSpace(goal) != "" && goalStatus == GoalStatusRunning {
-		text = activeGoalBlock(goal) + "\n\n" + text
-	}
-	if plan {
-		text = PlanModeMarker + "\n\n" + text
-	}
+	text = composeStableContext(text, plan, goal, goalStatus)
 
 	// Memory added mid-session rides the turn (never the cached system prefix),
 	// so it takes effect now without invalidating the prompt cache. It folds into
@@ -142,6 +137,25 @@ func (c *Controller) Compose(text string) string {
 		if note := c.jobs.DrainCompletedNote(); note != "" {
 			text = "<background-jobs>\n" + note + "\n</background-jobs>\n\n" + text
 		}
+	}
+	return text
+}
+
+func (c *Controller) composeWithoutParentDrains(text string) string {
+	c.mu.Lock()
+	plan := c.planMode
+	goal := c.goal
+	goalStatus := c.goalStatus
+	c.mu.Unlock()
+	return composeStableContext(text, plan, goal, goalStatus)
+}
+
+func composeStableContext(text string, plan bool, goal, goalStatus string) string {
+	if strings.TrimSpace(goal) != "" && goalStatus == GoalStatusRunning {
+		text = activeGoalBlock(goal) + "\n\n" + text
+	}
+	if plan {
+		text = PlanModeMarker + "\n\n" + text
 	}
 	return text
 }

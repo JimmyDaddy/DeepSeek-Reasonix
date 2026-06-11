@@ -91,6 +91,11 @@ completion is queued and flushed at a controller safe point before the parent
 `TurnDone` event is emitted. Child goroutines must not directly mutate the
 parent session.
 
+Background slash subagents inherit static controller context such as active goal
+and plan-mode framing, but they do not consume parent-turn one-shot queues such
+as pending memory updates or completed background-job summaries. Those queues
+remain reserved for the next parent turn.
+
 ## Event Contract
 
 Slash subagent lifecycle reuses existing event kinds. It does not add dedicated
@@ -260,6 +265,8 @@ disabled.
 - Child goroutines do not directly mutate the parent session.
 - Successful child answers merge as a user slash command plus assistant answer.
 - Failed and canceled child runs do not append a parent assistant answer.
+- Background slash subagents must not drain parent-turn pending memory or
+  completed-job context.
 - `Cancel()` continues to target the foreground turn; `CancelSubagent(id)`
   targets a retained slash-subagent run.
 - Writer-capable slash subagents must not run as unsafe background editors.
@@ -274,6 +281,8 @@ Controller:
 - Full retained event text for detail replay.
 - Final answer appended as a retained `Message` event when needed.
 - Parent-turn interleaving and queued completion merge.
+- Background slash subagents do not drain parent-turn pending memory or
+  completed-job context.
 - Clear/cancel ref handling and ambiguous alias handling.
 
 TUI:

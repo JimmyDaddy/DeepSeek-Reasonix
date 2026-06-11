@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
+	"reasonix/internal/jobs"
 	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
@@ -101,6 +103,95 @@ func TestSubmitRunsSubagentSkillViaRunner(t *testing.T) {
 	}
 	if hist[2].Role != provider.RoleAssistant || hist[2].Content != "child answer" {
 		t.Fatalf("assistant history = %#v, want child answer", hist[2])
+	}
+}
+
+func TestBackgroundSubagentDoesNotDrainQueuedMemory(t *testing.T) {
+	var gotTask string
+	done := make(chan struct{})
+	c := New(Options{
+		Registry: subagentReadOnlyRegistry("read_file"),
+		Skills: []skill.Skill{{
+			Name:         "scout",
+			RunAs:        skill.RunSubagent,
+			AllowedTools: []string{"read_file"},
+		}},
+		SkillRunner: func(_ context.Context, _ skill.Skill, task string, _ skill.SubagentRunContext) (string, error) {
+			gotTask = task
+			return "child answer", nil
+		},
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.TurnDone && e.Subagent != nil {
+				close(done)
+			}
+		}),
+	})
+	c.QueueMemory(`Saved memory "rmb": user's balance is in RMB`)
+
+	c.Submit("/scout inspect")
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background subagent")
+	}
+
+	if strings.Contains(gotTask, "<memory-update>") || strings.Contains(gotTask, "user's balance is in RMB") {
+		t.Fatalf("background subagent task should not drain queued memory, got %q", gotTask)
+	}
+	parent := c.Compose("parent turn")
+	if !strings.Contains(parent, "<memory-update>") || !strings.Contains(parent, "user's balance is in RMB") {
+		t.Fatalf("queued memory should remain for the parent turn, got %q", parent)
+	}
+	if again := c.Compose("again"); strings.Contains(again, "<memory-update>") {
+		t.Fatalf("parent Compose should still drain queued memory once, got %q", again)
+	}
+}
+
+func TestBackgroundSubagentDoesNotDrainCompletedJobs(t *testing.T) {
+	manager := jobs.NewManager(event.Discard)
+	defer manager.Close()
+	job := manager.Start("task", "scan", func(context.Context, io.Writer) (string, error) {
+		return "ok", nil
+	})
+	manager.Wait(context.Background(), []string{job.ID}, 0)
+
+	var gotTask string
+	done := make(chan struct{})
+	c := New(Options{
+		Jobs:     manager,
+		Registry: subagentReadOnlyRegistry("read_file"),
+		Skills: []skill.Skill{{
+			Name:         "scout",
+			RunAs:        skill.RunSubagent,
+			AllowedTools: []string{"read_file"},
+		}},
+		SkillRunner: func(_ context.Context, _ skill.Skill, task string, _ skill.SubagentRunContext) (string, error) {
+			gotTask = task
+			return "child answer", nil
+		},
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.TurnDone && e.Subagent != nil {
+				close(done)
+			}
+		}),
+	})
+
+	c.Submit("/scout inspect")
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background subagent")
+	}
+
+	if strings.Contains(gotTask, "<background-jobs>") || strings.Contains(gotTask, job.ID) {
+		t.Fatalf("background subagent task should not drain completed jobs, got %q", gotTask)
+	}
+	parent := c.Compose("parent turn")
+	if !strings.Contains(parent, "<background-jobs>") || !strings.Contains(parent, job.ID) {
+		t.Fatalf("completed job note should remain for the parent turn, got %q", parent)
+	}
+	if again := c.Compose("again"); strings.Contains(again, "<background-jobs>") {
+		t.Fatalf("parent Compose should still drain completed jobs once, got %q", again)
 	}
 }
 
