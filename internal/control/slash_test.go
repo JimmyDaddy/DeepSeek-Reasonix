@@ -1,9 +1,11 @@
 package control
 
 import (
-	"path/filepath"
+	"strings"
 	"testing"
 
+	"reasonix/internal/hook"
+	"reasonix/internal/memory"
 	"reasonix/internal/skill"
 )
 
@@ -26,11 +28,7 @@ func has(items []SlashItem, label string) bool {
 
 func TestSlashArgItems(t *testing.T) {
 	data := ArgData{
-		Skills: []skill.Skill{
-			{Name: "explore", Scope: skill.ScopeBuiltin},
-			{Name: "review", Scope: skill.ScopeBuiltin},
-			{Name: "scout", Scope: skill.ScopeProject, RunAs: skill.RunSubagent, Path: filepath.Join("tmp", ".claude", "agents", "scout.md")},
-		},
+		Skills:          []skill.Skill{{Name: "explore", Scope: skill.ScopeBuiltin}, {Name: "review", Scope: skill.ScopeBuiltin}},
 		DisabledSkills:  []skill.Skill{{Name: "security-review", Scope: skill.ScopeBuiltin}},
 		ServerNames:     []string{"fs", "git"},
 		ConfiguredMCP:   []string{"fs", "linear"},
@@ -136,12 +134,19 @@ func TestSlashArgItems(t *testing.T) {
 	}
 	// /subagents
 	items, _ = SlashArgItems("/subagents ", data)
-	if has(items, "list") || !has(items, "cancel") || !has(items, "clear") {
-		t.Errorf("/subagents should emphasize cancel/clear without list; got %v", labelsOf(items))
+	if !has(items, "cancel") || !has(items, "clear") {
+		t.Errorf("/subagents should offer cancel/clear; got %v", labelsOf(items))
 	}
 	items, _ = SlashArgItems("/subagents cancel ", data)
 	if !has(items, "Ellis") {
-		t.Errorf("/subagents cancel should list retained runs; got %v", labelsOf(items))
+		t.Errorf("/subagents cancel should offer subagent aliases; got %v", labelsOf(items))
+	}
+	items, _ = SlashArgItems("/subagents clear ", data)
+	if !has(items, "completed") || !has(items, "failed") || !has(items, "canceled") || !has(items, "all") {
+		t.Errorf("/subagents clear should offer terminal states; got %v", labelsOf(items))
+	}
+	if items, _ := SlashArgItems("/subagents list", data); len(items) != 0 {
+		t.Errorf("/subagents list should not offer a hidden no-op suggestion; got %v", labelsOf(items))
 	}
 	// /effort
 	items, _ = SlashArgItems("/effort ", data)
@@ -162,9 +167,6 @@ func TestSlashArgItems(t *testing.T) {
 	if items, _ := SlashArgItems("/help ", data); len(items) != 0 {
 		t.Errorf("/help should have no arg items; got %v", labelsOf(items))
 	}
-	if items, _ := SlashArgItems("/agents ", data); len(items) != 0 {
-		t.Errorf("/agents should have no arg items once removed; got %v", labelsOf(items))
-	}
 	// a fully-typed terminal subcommand offers nothing (no lingering no-op) so the
 	// caller can submit instead of "accepting" a no-op — the /skills list bug.
 	if items, _ := SlashArgItems("/skills list", data); len(items) != 0 {
@@ -174,5 +176,67 @@ func TestSlashArgItems(t *testing.T) {
 	// handled by runSkillSubcommand.
 	if items, _ := SlashArgItems("/skills li", data); len(items) != 0 {
 		t.Errorf("/skills li should not offer hidden list suggestion; got %v", labelsOf(items))
+	}
+}
+
+func TestMemoryListTextIncludesSavedMemories(t *testing.T) {
+	store := memory.Store{Dir: t.TempDir()}
+	if _, err := store.Save(memory.Memory{
+		Name:        "cache-first",
+		Title:       "Cache first",
+		Description: "Preserve prompt cache stability",
+		Type:        memory.TypeProject,
+		Body:        "Use retrieval tools instead of dynamic prefix injection.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := New(Options{Memory: &memory.Set{Store: store}})
+	out := c.memoryListText()
+	for _, want := range []string{"saved memories", "[Cache first](cache-first.md)", "Preserve prompt cache stability"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("/memory output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestMemoryListTextIncludesArchivedMemories(t *testing.T) {
+	store := memory.Store{Dir: t.TempDir()}
+	if _, err := store.Save(memory.Memory{
+		Name:        "stale-plan",
+		Title:       "Stale plan",
+		Description: "Superseded by the new retrieval design",
+		Type:        memory.TypeProject,
+		Body:        "Old plan body.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := store.Archive("stale-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := New(Options{Memory: &memory.Set{Store: store}})
+	out := c.memoryListText()
+	for _, want := range []string{"archived memories", "[Stale plan](" + archive + ")", "Superseded by the new retrieval design"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("/memory output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "saved memories\n  [Stale plan]") {
+		t.Fatalf("archived memory should not appear as active saved memory:\n%s", out)
+	}
+}
+
+func TestManagementHooksTrustUsesWorkspaceRoot(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	c := New(Options{WorkspaceRoot: project})
+	if !c.managementNotice("/hooks trust") {
+		t.Fatal("/hooks trust was not handled")
+	}
+	if !hook.IsTrusted(project, home) {
+		t.Fatal("/hooks trust did not trust the controller workspace root")
 	}
 }

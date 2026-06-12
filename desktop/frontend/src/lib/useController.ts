@@ -23,6 +23,7 @@ import type {
   QuestionAnswer,
   SessionMeta,
   TabMeta,
+  TokenMode,
   ToolApprovalMode,
   WireApproval,
   WireAsk,
@@ -117,7 +118,7 @@ function usageTotalTokens(usage?: WireUsage): number {
   return Math.max(0, promptTokens + usage.completionTokens);
 }
 
-function sameMeta(a?: Meta, b?: Meta): boolean {
+export function sameMeta(a?: Meta, b?: Meta): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return (
@@ -128,10 +129,42 @@ function sameMeta(a?: Meta, b?: Meta): boolean {
     a.cwd === b.cwd &&
     a.autoApproveTools === b.autoApproveTools &&
     a.bypass === b.bypass &&
+    a.collaborationMode === b.collaborationMode &&
     a.toolApprovalMode === b.toolApprovalMode &&
+    a.tokenMode === b.tokenMode &&
     a.goal === b.goal &&
     a.goalStatus === b.goalStatus
   );
+}
+
+/** Known read-only tool names. Session restore hardcodes readOnly=false for all
+ *  tools, so we derive it from the name to enable correct batching.
+ *  Mirrors Go backend ReadOnly() + codegraph ReadOnlyToolNames(). */
+function isReadOnlyTool(name: string): boolean {
+  switch (name) {
+    case "read_file":
+    case "ls":
+    case "grep":
+    case "glob":
+    case "web_fetch":
+    case "bash_output":
+    case "waitJob":
+    case "todo_write":
+    case "read_skill":
+    case "codegraph_callees":
+    case "codegraph_callers":
+    case "codegraph_context":
+    case "codegraph_explore":
+    case "codegraph_files":
+    case "codegraph_impact":
+    case "codegraph_node":
+    case "codegraph_search":
+    case "codegraph_status":
+    case "codegraph_trace":
+      return true;
+    default:
+      return false;
+  }
 }
 
 type Action =
@@ -218,7 +251,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           id: tc.id || `${idPrefix}tool${seq}`,
           name: tc.name,
           args: tc.arguments ?? "",
-          readOnly: false,
+          readOnly: isReadOnlyTool(tc.name),
           status: error ? "error" : "done",
           output,
           error,
@@ -237,7 +270,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         id: m.toolCallId || `${idPrefix}tool${seq}`,
         name: m.toolName || "tool",
         args: "",
-        readOnly: false,
+        readOnly: isReadOnlyTool(m.toolName || "tool"),
         status: error ? "error" : "done",
         output,
         error,
@@ -317,6 +350,11 @@ function applyEvent(s: State, e: WireEvent): State {
     case "tool_dispatch": {
       const t = e.tool;
       if (!t) return s;
+      // Skip partial dispatches (name-only, no args yet) — the full dispatch
+      // with complete args follows from executeBatch. Waiting for the full
+      // dispatch means the tool card appears with name + subject at once,
+      // avoiding a "name → command" visual jump.
+      if (t.partial) return s;
       const id = t.id || `tool${s.seq}`;
       const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
       if (idx >= 0) {
@@ -893,8 +931,23 @@ export function useController() {
     } catch { /* ignore */ }
   }, [activeTabId, dispatchTo]);
 
+  const setTokenMode = useCallback(async (mode: TokenMode) => {
+    if (!activeTabId) return;
+    try {
+      await app.SetTokenModeForTab(activeTabId, mode);
+    } catch (err) {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: t("status.tokenModeSwitchFailed", { err: errorMessage(err) }) });
+      return;
+    }
+    try {
+      dispatchTo(activeTabId, { type: "meta", meta: await app.MetaForTab(activeTabId) });
+      dispatchTo(activeTabId, { type: "context", context: await app.ContextUsageForTab(activeTabId) });
+      dispatchTo(activeTabId, { type: "effort", effort: await app.EffortForTab(activeTabId) });
+    } catch { /* ignore */ }
+  }, [activeTabId, dispatchTo]);
+
   const fetchMemory = useCallback((): Promise<MemoryView> =>
-    app.Memory().catch(() => ({ docs: [], facts: [], scopes: [], storeDir: "", available: false })), []);
+    app.Memory().catch(() => ({ docs: [], facts: [], archives: [], scopes: [], storeDir: "", available: false })), []);
   const remember = useCallback(async (scope: string, note: string) => { await app.Remember(scope, note).catch(() => {}); }, []);
   const forget = useCallback(async (name: string) => { await app.Forget(name).catch(() => {}); }, []);
   const saveDoc = useCallback(async (path: string, body: string) => { await app.SaveDoc(path, body).catch(() => {}); }, []);
@@ -989,7 +1042,7 @@ export function useController() {
     activeTabId,
     send, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
     newSession, clearSession, listSessions, listTrashedSessions, resumeSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
-    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort,
+    refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, ensureBlankTab, closeTab, reorderTabs,
     syncActiveTab: syncActiveTabFromBackend,

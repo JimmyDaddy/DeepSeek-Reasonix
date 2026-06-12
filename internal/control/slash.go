@@ -2,10 +2,12 @@ package control
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"reasonix/internal/command"
 	"reasonix/internal/config"
+	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
 	"reasonix/internal/skill"
 )
@@ -51,7 +53,7 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	}
 	from := strings.LastIndexAny(line, " \t") + 1
 	cur := line[from:]
-	prior := command.TokenizeArgs(line[:from]) // committed tokens, including the command word
+	prior := strings.Fields(line[:from]) // committed tokens, including the command word
 	var raw []SlashItem
 	switch line[:cmdEnd] {
 	case "/mcp":
@@ -328,8 +330,7 @@ func subagentsArgItems(prior []string, d ArgData) []SlashItem {
 			if label == "" {
 				label = s.ID
 			}
-			hint := fmt.Sprintf("/%s %s · %s", s.Skill, s.State, s.ID)
-			items = append(items, SlashItem{Label: label, Insert: s.ID, Hint: hint})
+			items = append(items, SlashItem{Label: label, Insert: label, Hint: s.Skill})
 		}
 		return items
 	case "clear":
@@ -373,7 +374,7 @@ func filterSlash(items []SlashItem, line string, from int, cur string) []SlashIt
 // and reports whether it handled the verb. Skills and custom commands are NOT
 // here — those resolve to a turn in Submit.
 func (c *Controller) managementNotice(trimmed string) bool {
-	fields := command.TokenizeArgs(trimmed)
+	fields := strings.Fields(trimmed)
 	if len(fields) == 0 {
 		return false
 	}
@@ -406,7 +407,26 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		}
 		c.notice(c.skillListText())
 	case "/hooks":
-		c.notice(c.hookListText())
+		sub := ""
+		if len(fields) >= 2 {
+			sub = strings.ToLower(fields[1])
+		}
+		switch sub {
+		case "", "list", "ls":
+			c.notice(c.hookListText())
+		case "trust":
+			root := c.cpRoot
+			if root == "" {
+				root, _ = os.Getwd()
+			}
+			if err := hook.Trust(root, ""); err != nil {
+				c.notice("hooks trust: " + err.Error())
+			} else {
+				c.notice("trusted this project's hooks — they load on the next /new or restart")
+			}
+		default:
+			c.notice("unknown /hooks subcommand " + fields[1] + " — try: /hooks, /hooks trust")
+		}
 	case "/subagents":
 		c.notice(c.subagentsText(fields))
 	case "/mcp":
@@ -507,15 +527,55 @@ func (c *Controller) providerSwitchText(name string) string {
 }
 
 func (c *Controller) memoryListText() string {
-	if c.mem == nil || len(c.mem.Docs) == 0 {
+	if c.mem == nil {
+		return i18n.M.ListMemoryNone
+	}
+	saved := c.mem.Store.List()
+	archived := c.mem.Store.ListArchived()
+	if len(c.mem.Docs) == 0 && len(saved) == 0 && len(archived) == 0 {
 		return i18n.M.ListMemoryNone
 	}
 	var b strings.Builder
-	b.WriteString(i18n.M.ListMemoryHeader + "\n")
-	for _, d := range c.mem.Docs {
-		fmt.Fprintf(&b, "  (%s) %s\n", d.Scope, d.Path)
+	if len(c.mem.Docs) > 0 {
+		b.WriteString(i18n.M.ListMemoryHeader + "\n")
+		for _, d := range c.mem.Docs {
+			fmt.Fprintf(&b, "  (%s) %s\n", d.Scope, d.Path)
+		}
+	}
+	if len(saved) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(i18n.M.ListMemorySaved + "\n")
+		for _, m := range saved {
+			fmt.Fprintf(&b, "  [%s](%s.md) (%s) %s\n", memoryDisplayTitle(m.Title, m.Name), m.Name, m.Type, memoryOneLine(m.Description))
+		}
+	}
+	if len(archived) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(i18n.M.ListMemoryArchived + "\n")
+		for _, m := range archived {
+			when := ""
+			if !m.ArchivedAt.IsZero() {
+				when = " — " + m.ArchivedAt.Format("2006-01-02 15:04:05Z")
+			}
+			fmt.Fprintf(&b, "  [%s](%s) (%s)%s %s\n", memoryDisplayTitle(m.Title, m.Name), m.Path, m.Type, when, memoryOneLine(m.Description))
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func memoryDisplayTitle(title, name string) string {
+	if t := memoryOneLine(title); t != "" {
+		return t
+	}
+	return strings.ReplaceAll(name, "-", " ")
+}
+
+func memoryOneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func (c *Controller) SubagentsText(input string) string {

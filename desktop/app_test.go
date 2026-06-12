@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 )
@@ -89,6 +91,77 @@ func TestEffortDefaultsBeforeStartup(t *testing.T) {
 	got := NewApp().Effort()
 	if !got.Supported || got.Current != "auto" || got.Default != "high" || !hasLevel(got.Levels, "auto") {
 		t.Fatalf("pre-startup Effort() = %+v, want auto with DeepSeek default high", got)
+	}
+}
+
+func TestMemoryViewReturnsNonNilArraysBeforeStartup(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	view := NewApp().Memory()
+	if view.Docs == nil || view.Facts == nil || view.Archives == nil || view.Scopes == nil {
+		t.Fatalf("Memory() arrays must be non-nil before startup: %+v", view)
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("marshal Memory(): %v", err)
+	}
+	for _, bad := range []string{`"docs":null`, `"facts":null`, `"archives":null`, `"scopes":null`} {
+		if strings.Contains(string(raw), bad) {
+			t.Fatalf("Memory() JSON contains %s; frontend expects []: %s", bad, raw)
+		}
+	}
+}
+
+func TestMemoryViewIncludesActiveAndArchivedFacts(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userDir := t.TempDir()
+	cwd := t.TempDir()
+	store := memory.Store{Dir: filepath.Join(userDir, "projects", "test", "memory")}
+	if _, err := store.Save(memory.Memory{
+		Name:        "active-fact",
+		Title:       "Active fact",
+		Description: "Still applies",
+		Type:        memory.TypeProject,
+		Body:        "Active body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save(memory.Memory{
+		Name:        "archived-fact",
+		Description: "No longer applies",
+		Type:        memory.TypeFeedback,
+		Body:        "Archived body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Archive("archived-fact"); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Memory: &memory.Set{
+		Docs:    []memory.Source{{Path: filepath.Join(cwd, "AGENTS.md"), Scope: memory.ScopeProject, Body: "Project instructions"}},
+		Store:   store,
+		CWD:     cwd,
+		UserDir: userDir,
+	}}), "test-model")
+
+	view := app.Memory()
+	if !view.Available || view.StoreDir != store.Dir {
+		t.Fatalf("Memory() availability/store = %v/%q, want true/%q", view.Available, view.StoreDir, store.Dir)
+	}
+	if len(view.Docs) != 1 || view.Docs[0].Scope != "project" || !strings.Contains(view.Docs[0].Body, "Project instructions") {
+		t.Fatalf("Memory() docs = %+v", view.Docs)
+	}
+	if len(view.Facts) != 1 || view.Facts[0].Name != "active-fact" || view.Facts[0].Type != "project" {
+		t.Fatalf("Memory() active facts = %+v", view.Facts)
+	}
+	if len(view.Archives) != 1 || view.Archives[0].Name != "archived-fact" || view.Archives[0].Type != "feedback" ||
+		view.Archives[0].Path == "" || view.Archives[0].ArchivedAt == "" {
+		t.Fatalf("Memory() archived facts = %+v", view.Archives)
+	}
+	if len(view.Scopes) != 3 {
+		t.Fatalf("Memory() scopes = %+v, want user/project/local", view.Scopes)
 	}
 }
 
@@ -902,6 +975,78 @@ func TestSetEffortRebuildsController(t *testing.T) {
 	}
 }
 
+func TestSetTokenModeRebuildsController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetTokenMode("economy"); err != nil {
+		t.Fatalf("SetTokenMode(economy): %v", err)
+	}
+	if c := app.activeCtrl(); c == nil {
+		t.Fatal("SetTokenMode should leave a rebuilt controller")
+	}
+	if c := app.activeCtrl(); c == old {
+		t.Fatal("SetTokenMode should rebuild the active controller so the provider sees the new tool profile")
+	}
+	tab := app.activeTab()
+	if tab == nil {
+		t.Fatal("active tab missing")
+	}
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode = %q, want economy", got)
+	}
+	if got := app.Meta().TokenMode; got != "economy" {
+		t.Fatalf("Meta token mode = %q, want economy", got)
+	}
+	saved := loadTabsFile()
+	if len(saved.Tabs) != 1 || saved.Tabs[0].TokenMode != "economy" {
+		t.Fatalf("saved tabs = %+v, want economy token mode", saved.Tabs)
+	}
+}
+
+func TestSetTokenModeKeepsControllerWhenRebuildFails(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "missing-token-mode-model")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	err := app.SetTokenMode("economy")
+	if err == nil {
+		t.Fatal("SetTokenMode(economy) with an unknown model should fail")
+	}
+	if c := app.activeCtrl(); c != old {
+		t.Fatalf("SetTokenMode failure replaced controller: got %p want %p", c, old)
+	}
+	tab := app.activeTab()
+	if tab == nil {
+		t.Fatal("active tab missing")
+	}
+	if got := currentTabTokenMode(tab); got != "full" {
+		t.Fatalf("token mode after failed rebuild = %q, want full", got)
+	}
+	if got := app.Meta().TokenMode; got != "full" {
+		t.Fatalf("Meta token mode after failed rebuild = %q, want full", got)
+	}
+}
+
 func TestSetEffortRejectsRunningTurn(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -914,6 +1059,24 @@ func TestSetEffortRejectsRunningTurn(t *testing.T) {
 	err := app.SetEffort("max")
 	if err == nil || !strings.Contains(err.Error(), "finish or cancel") {
 		t.Fatalf("SetEffort while running error = %v, want finish/cancel guard", err)
+	}
+
+	close(runner.release)
+	waitNotRunning(t, app.activeCtrl())
+}
+
+func TestSetTokenModeRejectsRunningTurn(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Runner: runner}), "")
+	app.activeCtrl().Submit("work")
+	<-runner.started
+
+	err := app.SetTokenMode("economy")
+	if err == nil || !strings.Contains(err.Error(), "finish or cancel") {
+		t.Fatalf("SetTokenMode while running error = %v, want finish/cancel guard", err)
 	}
 
 	close(runner.release)
@@ -1466,6 +1629,224 @@ func TestCapabilitiesShowsDefaultCodegraphDisabled(t *testing.T) {
 		}
 	}
 	t.Fatalf("codegraph missing from Capabilities: %+v", view.Servers)
+}
+
+func TestCapabilitiesShowsBuiltInMCPDefaults(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	view := app.Capabilities()
+	want := map[string][]string{
+		"time": []string{"builtin-mcp", "time"},
+	}
+	found := map[string]bool{}
+	for _, s := range view.Servers {
+		if s.Name != "time" && s.Name != "context7" {
+			continue
+		}
+		found[s.Name] = true
+		wantStatus := map[string]string{"time": "deferred", "context7": "disabled"}[s.Name]
+		wantAutoStart := s.Name == "time"
+		if s.Status != wantStatus {
+			t.Fatalf("%s status = %q, want %s; server = %+v", s.Name, s.Status, wantStatus, s)
+		}
+		if !s.BuiltIn || !s.Configured || s.AutoStart != wantAutoStart {
+			t.Fatalf("%s builtIn/configured/autoStart = %v/%v/%v, want true/true/%v; server = %+v", s.Name, s.BuiltIn, s.Configured, s.AutoStart, wantAutoStart, s)
+		}
+		if s.Tier != "lazy" || s.Transport != "stdio" || strings.TrimSpace(s.Command) == "" {
+			t.Fatalf("%s transport/tier/command = %q/%q/%q, want stdio/lazy/non-empty; server = %+v", s.Name, s.Transport, s.Tier, s.Command, s)
+		}
+		if s.Name == "time" && !reflect.DeepEqual(s.Args, want["time"]) {
+			t.Fatalf("time args = %+v, want %+v", s.Args, want["time"])
+		}
+		if s.Name == "context7" && !validContext7Runner(s.Command, s.Args) {
+			t.Fatalf("context7 runner = %q %+v, want npx/pnpm/bunx for @upstash/context7-mcp", s.Command, s.Args)
+		}
+	}
+	for _, name := range []string{"time", "context7"} {
+		if !found[name] {
+			t.Fatalf("built-in MCP %s missing from Capabilities: %+v", name, view.Servers)
+		}
+	}
+}
+
+func TestCapabilitiesShowsManuallyEnabledContext7Deferred(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
+[codegraph]
+enabled = false
+
+[builtin_mcp]
+context7_enabled = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	view := app.Capabilities()
+	for _, s := range view.Servers {
+		if s.Name == "context7" {
+			if s.Status != "deferred" || !s.AutoStart || !s.BuiltIn || !s.Configured {
+				t.Fatalf("enabled context7 view = %+v, want deferred built-in configured autoStart", s)
+			}
+			return
+		}
+	}
+	t.Fatalf("context7 missing from Capabilities: %+v", view.Servers)
+}
+
+func validContext7Runner(command string, args []string) bool {
+	switch command {
+	case "npx":
+		return reflect.DeepEqual(args, []string{"-y", "@upstash/context7-mcp"})
+	case "pnpm":
+		return reflect.DeepEqual(args, []string{"dlx", "@upstash/context7-mcp"})
+	case "bunx":
+		return reflect.DeepEqual(args, []string{"@upstash/context7-mcp"})
+	default:
+		return false
+	}
+}
+
+func TestConfiguredMCPWithBuiltInNameTakesPrecedence(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
+[codegraph]
+enabled = false
+
+[[plugins]]
+name = "time"
+command = "custom-time"
+args = ["serve"]
+tier = "lazy"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	view := app.Capabilities()
+	found := false
+	for _, s := range view.Servers {
+		if s.Name != "time" {
+			continue
+		}
+		found = true
+		if s.BuiltIn || !s.Configured || s.Command != "custom-time" || !reflect.DeepEqual(s.Args, []string{"serve"}) {
+			t.Fatalf("configured time view = %+v, want user config to take precedence over built-in", s)
+		}
+	}
+	if !found {
+		t.Fatalf("configured time server missing from Capabilities: %+v", view.Servers)
+	}
+
+	if err := app.SetMCPServerEnabled("time", false); err != nil {
+		t.Fatalf("SetMCPServerEnabled(time,false): %v", err)
+	}
+	view = app.Capabilities()
+	for _, s := range view.Servers {
+		if s.Name == "time" {
+			if s.Status != "disabled" || s.BuiltIn || s.Command != "custom-time" {
+				t.Fatalf("disabled configured time view = %+v, want disabled external config", s)
+			}
+			return
+		}
+	}
+	t.Fatalf("time missing after disable: %+v", view.Servers)
+}
+
+func TestEditAndRemoveConfiguredMCPWithBuiltInName(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(`
+[codegraph]
+enabled = false
+
+[[plugins]]
+name = "time"
+command = "custom-time"
+args = ["serve"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	if err := app.UpdateMCPServer("time", MCPServerInput{
+		Name:      "time",
+		Transport: "stdio",
+		Command:   "updated-time",
+		Args:      []string{"run"},
+	}); err != nil {
+		t.Fatalf("UpdateMCPServer(time): %v", err)
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, ok := findPluginEntry(cfg.Plugins, "time")
+	if !ok || updated.Command != "updated-time" || !reflect.DeepEqual(updated.Args, []string{"run"}) {
+		t.Fatalf("updated time plugin = %+v, found=%v", updated, ok)
+	}
+
+	if err := app.RemoveMCPServer("time"); err != nil {
+		t.Fatalf("RemoveMCPServer(time): %v", err)
+	}
+	cfg, err = config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findPluginEntry(cfg.Plugins, "time"); ok {
+		t.Fatalf("time plugin still configured after remove: %+v", cfg.Plugins)
+	}
+}
+
+func TestSetBuiltInMCPDisabledWritesBuiltInConfigOnly(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+
+	if err := app.SetMCPServerEnabled("time", false); err != nil {
+		t.Fatalf("SetMCPServerEnabled(time,false): %v", err)
+	}
+	view := app.Capabilities()
+	for _, s := range view.Servers {
+		if s.Name == "time" {
+			if s.Status != "disabled" || !s.BuiltIn || !s.Configured {
+				t.Fatalf("time disabled view = %+v, want disabled built-in configured", s)
+			}
+			cfg := config.LoadForEdit(config.UserConfigPath())
+			if _, ok := findPluginEntry(cfg.Plugins, "time"); ok {
+				t.Fatalf("time built-in disable wrote a user plugin: %+v", cfg.Plugins)
+			}
+			if cfg.BuiltInMCP.TimeEnabled {
+				t.Fatalf("time built-in disable left time_enabled true: %+v", cfg.BuiltInMCP)
+			}
+			return
+		}
+	}
+	t.Fatalf("time missing from Capabilities after disable: %+v", view.Servers)
 }
 
 func TestCapabilitiesMarksBackgroundRemoteMCPAuthPossible(t *testing.T) {

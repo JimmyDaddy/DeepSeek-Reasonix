@@ -8,7 +8,7 @@
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 
 import { t } from "./i18n";
-import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeToolApprovalMode } from "./types";
+import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 
 import type {
   BalanceInfo,
@@ -26,8 +26,12 @@ import type {
   EffortInfo,
   FilePreview,
   HistoryMessage,
+  HookConfigView,
+  HooksSettingsView,
   JobView,
   MCPServerInput,
+  MemorySuggestion,
+  MemorySuggestionsView,
   MemoryView,
   Meta,
   ModelInfo,
@@ -39,6 +43,7 @@ import type {
   SessionMeta,
   SettingsView,
   SkillRootView,
+  SkillSuggestion,
   SkillView,
   SlashArgsResult,
   TabMeta,
@@ -186,11 +191,21 @@ export interface AppBindings {
   SetEffort(level: string): Promise<void>;
   EffortForTab(tabID: string): Promise<EffortInfo>;
   SetEffortForTab(tabID: string, level: string): Promise<void>;
+  SetTokenMode(mode: string): Promise<void>;
+  SetTokenModeForTab(tabID: string, mode: string): Promise<void>;
   Memory(): Promise<MemoryView>;
+  MemorySuggestions(): Promise<MemorySuggestionsView>;
+  AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
+  AcceptSkillSuggestion(suggestion: SkillSuggestion): Promise<string>;
   Remember(scope: string, note: string): Promise<string>;
   Forget(name: string): Promise<void>;
   SaveDoc(path: string, body: string): Promise<string>;
   Settings(): Promise<SettingsView>;
+  HooksSettings(scope: string): Promise<HooksSettingsView>;
+  SaveHooksSettings(scope: string, hooks: HookConfigView[]): Promise<void>;
+  SaveHooksSettingsForRoot(scope: string, projectRoot: string, hooks: HookConfigView[]): Promise<void>;
+  TrustProjectHooks(): Promise<void>;
+  TrustProjectHooksForRoot(projectRoot: string): Promise<void>;
   SetDefaultModel(ref: string): Promise<void>;
   SetPlannerModel(ref: string): Promise<void>;
   SetSubagentModel(ref: string): Promise<void>;
@@ -206,7 +221,7 @@ export interface AppBindings {
   SetPermissionMode(mode: string): Promise<void>;
   AddPermissionRule(list: string, rule: string): Promise<void>;
   RemovePermissionRule(list: string, rule: string): Promise<void>;
-  SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[]): Promise<void>;
+  SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string): Promise<void>;
   SetNetwork(n: NetworkView): Promise<void>;
   SetBotSettings(b: BotSettingsView): Promise<void>;
   SetBotSecret(envName: string, value: string): Promise<void>;
@@ -489,6 +504,34 @@ function makeMockApp(): AppBindings {
         { name: "node", description: "Inspect a specific graph node." },
       ],
     },
+    {
+      name: "time",
+      transport: "stdio",
+      status: "deferred",
+      builtIn: true,
+      configured: true,
+      autoStart: true,
+      tier: "lazy",
+      command: "reasonix",
+      args: ["builtin-mcp", "time"],
+      tools: 0,
+      prompts: 0,
+      resources: 0,
+    },
+    {
+      name: "context7",
+      transport: "stdio",
+      status: "disabled",
+      builtIn: true,
+      configured: true,
+      autoStart: false,
+      tier: "lazy",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      tools: 0,
+      prompts: 0,
+      resources: 0,
+    },
     { name: "github", transport: "stdio", status: "connected", configured: true, autoStart: true, tier: "background", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], tools: 12, prompts: 2, resources: 0 },
     {
       name: "linear",
@@ -638,7 +681,7 @@ function makeMockApp(): AppBindings {
       { name: "mimo-token-plan", builtIn: true, added: false, kind: "openai", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1", modelsUrl: "", models: ["mimo-v2.5-pro"], default: "mimo-v2.5-pro", apiKeyEnv: "MIMO_API_KEY", keySet: false, balanceUrl: "", contextWindow: 1_048_576, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
     permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"] },
-    sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [] },
+    sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [], shell: "auto" },
     network: {
       proxyMode: "auto",
       proxyUrl: "",
@@ -754,6 +797,27 @@ function makeMockApp(): AppBindings {
     providerKinds: ["openai"],
     autoApproveTools: false,
     bypass: false,
+  };
+  const hookEvents = ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "PostLLMCall", "SessionStart", "SessionEnd", "SubagentStop", "Notification", "PreCompact"];
+  const hookSettings: Record<string, HooksSettingsView> = {
+    global: {
+      scope: "global",
+      path: "~/.reasonix/settings.json",
+      projectRoot: "",
+      trusted: true,
+      events: hookEvents,
+      hooks: [
+        { event: "Stop", command: "echo turn done", description: "Notify after each turn" },
+      ],
+    },
+    project: {
+      scope: "project",
+      path: "./.reasonix/settings.json",
+      projectRoot: "/mock/project",
+      trusted: false,
+      events: hookEvents,
+      hooks: [],
+    },
   };
   settings.providers = settings.providers.map((provider) =>
     provider.apiKeyEnv === "DEEPSEEK_API_KEY" ? { ...provider, keySet: !freshMock } : provider,
@@ -1013,6 +1077,7 @@ function makeMockApp(): AppBindings {
       mode: "normal",
       collaborationMode: "normal",
       toolApprovalMode: "ask",
+      tokenMode: "full",
       active: true,
       cwd: globalWorkspaceRoot,
     },
@@ -1031,6 +1096,7 @@ function makeMockApp(): AppBindings {
       mode: "normal",
       collaborationMode: "normal",
       toolApprovalMode: "ask",
+      tokenMode: "full",
       active: true,
       cwd: "~/projects/joyquant-db",
     },
@@ -1048,6 +1114,7 @@ function makeMockApp(): AppBindings {
       mode: "normal",
       collaborationMode: "normal",
       toolApprovalMode: "ask",
+      tokenMode: "full",
       active: false,
       cwd: "~/projects/joyquant-sys",
     },
@@ -1064,6 +1131,7 @@ function makeMockApp(): AppBindings {
       mode: "normal",
       collaborationMode: "normal",
       toolApprovalMode: "ask",
+      tokenMode: "full",
       active: false,
       cwd: "~/projects/joyquant-db",
     },
@@ -1611,6 +1679,7 @@ function makeMockApp(): AppBindings {
           const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
           const toolApprovalMode = normalizeToolApprovalMode(active?.toolApprovalMode, active ? normalizeMode(active.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
+          const collaborationMode = normalizeCollaborationMode(active?.collaborationMode, active?.goal, active ? normalizeMode(active.mode) : "normal");
           return {
             label: active?.label ?? "DeepSeek-R1",
             ready: active?.ready ?? true,
@@ -1618,7 +1687,9 @@ function makeMockApp(): AppBindings {
             cwd: active?.cwd || cwd,
             autoApproveTools,
             bypass: autoApproveTools,
+            collaborationMode,
             toolApprovalMode,
+            tokenMode: normalizeTokenMode(active?.tokenMode),
             goal: active?.goal ?? "",
             goalStatus: active?.goalStatus ?? (active?.goal ? "running" : "stopped"),
           };
@@ -1627,6 +1698,7 @@ function makeMockApp(): AppBindings {
           const tab = mockTabs.find((item) => item.id === tabID) ?? mockTabs.find((item) => item.active) ?? mockTabs[0];
           const toolApprovalMode = normalizeToolApprovalMode(tab?.toolApprovalMode, tab ? normalizeMode(tab.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
+          const collaborationMode = normalizeCollaborationMode(tab?.collaborationMode, tab?.goal, tab ? normalizeMode(tab.mode) : "normal");
           return {
             label: tab?.label ?? "DeepSeek-R1",
             ready: tab?.ready ?? true,
@@ -1634,7 +1706,9 @@ function makeMockApp(): AppBindings {
             cwd: tab?.cwd || cwd,
             autoApproveTools,
             bypass: autoApproveTools,
+            collaborationMode,
             toolApprovalMode,
+            tokenMode: normalizeTokenMode(tab?.tokenMode),
             goal: tab?.goal ?? "",
             goalStatus: tab?.goalStatus ?? (tab?.goal ? "running" : "stopped"),
           };
@@ -1965,6 +2039,14 @@ function makeMockApp(): AppBindings {
         async SetEffortForTab(_tabID, level) {
           await this.SetEffort(level);
         },
+        async SetTokenMode(mode: string) {
+          const active = mockTabs.find((tab) => tab.active);
+          if (active) await this.SetTokenModeForTab(active.id, mode);
+        },
+        async SetTokenModeForTab(tabID, mode) {
+          const tokenMode = normalizeTokenMode(mode);
+          mockTabs = mockTabs.map((tab) => (tab.id === tabID ? { ...tab, tokenMode } : tab));
+        },
     async Memory() {
       return {
         available: true,
@@ -1989,12 +2071,60 @@ function makeMockApp(): AppBindings {
             body: "Indent with tabs.",
           },
         ],
+        archives: [
+          {
+            name: "old-plan",
+            description: "Superseded planning note",
+            type: "project",
+            body: "This plan was archived after the implementation changed.",
+            path: "~/.config/reasonix/projects/-mock/memory/.archive/20260612-021500.000-old-plan.md",
+            archivedAt: "2026-06-12T02:15:00Z",
+          },
+        ],
         scopes: [
           { scope: "user", path: "~/.config/reasonix/REASONIX.md" },
           { scope: "project", path: "REASONIX.md" },
           { scope: "local", path: "REASONIX.local.md" },
         ],
       };
+    },
+    async MemorySuggestions() {
+      return {
+        memories: [
+          {
+            id: "memory-prefers-concise-replies",
+            name: "prefers-concise-replies",
+            title: "Prefers concise replies",
+            description: "User prefers concise replies unless detail is requested.",
+            type: "user",
+            body: "User prefers concise replies unless detail is requested.\n\n**Why:** Suggested from recent local history.\n**How to apply:** Keep answers brief by default.",
+            reason: "future-facing preference",
+            evidence: ["mock-session: always keep replies concise"],
+          },
+        ],
+        skills: [
+          {
+            id: "skill-reasonix-pr-followup",
+            name: "reasonix-pr-followup",
+            description: "Review or update a Reasonix GitHub PR, address feedback, verify, and publish safely.",
+            scope: "project",
+            body: "# Reasonix PR Followup\n\nUse this skill for repeated Reasonix PR work.\n\n## Workflow\n\n1. Confirm branch and PR state.\n2. Inspect the diff.\n3. Fix actionable feedback.\n4. Verify and update the PR.\n",
+            reason: "recent history repeatedly touched PR workflows",
+            evidence: ["mock-pr-session: 提交到pr，并更新内容", "mock-review-session: 解决该pr下机器人提出来的问题"],
+          },
+        ],
+        generatedAt: new Date().toISOString(),
+        available: true,
+        source: "mock",
+      };
+    },
+    async AcceptMemorySuggestion(suggestion: MemorySuggestion) {
+      emit({ kind: "notice", level: "info", text: `saved suggested memory → ${suggestion.name}` });
+      return `${suggestion.name}.md`;
+    },
+    async AcceptSkillSuggestion(suggestion: SkillSuggestion) {
+      emit({ kind: "notice", level: "info", text: `created suggested skill → ${suggestion.name}` });
+      return `.reasonix/skills/${suggestion.name}/SKILL.md`;
     },
     async Remember(scope: string, note: string) {
       emit({ kind: "notice", level: "info", text: `remembered → ${scope}` });
@@ -2009,6 +2139,26 @@ function makeMockApp(): AppBindings {
     },
     async Settings() {
       return JSON.parse(JSON.stringify(settings)) as SettingsView;
+    },
+    async HooksSettings(scope: string) {
+      const key = scope === "project" ? "project" : "global";
+      return JSON.parse(JSON.stringify(hookSettings[key])) as HooksSettingsView;
+    },
+    async SaveHooksSettings(scope: string, hooks: HookConfigView[]) {
+      const key = scope === "project" ? "project" : "global";
+      hookSettings[key].hooks = JSON.parse(JSON.stringify(hooks)) as HookConfigView[];
+    },
+    async SaveHooksSettingsForRoot(scope: string, _projectRoot: string, hooks: HookConfigView[]) {
+      const key = scope === "project" ? "project" : "global";
+      hookSettings[key].hooks = JSON.parse(JSON.stringify(hooks)) as HookConfigView[];
+    },
+    async TrustProjectHooks() {
+      hookSettings.project.trusted = true;
+    },
+    async TrustProjectHooksForRoot(projectRoot: string) {
+      if (projectRoot && projectRoot === hookSettings.project.projectRoot) {
+        hookSettings.project.trusted = true;
+      }
     },
     async SetDefaultModel(ref: string) {
       settings.defaultModel = ref;
@@ -2079,8 +2229,8 @@ function makeMockApp(): AppBindings {
       const k = list as "allow" | "ask" | "deny";
       settings.permissions[k] = settings.permissions[k].filter((r) => r !== rule);
     },
-        async SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[]) {
-          settings.sandbox = { bash, network, workspaceRoot, allowWrite };
+        async SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string) {
+          settings.sandbox = { bash, network, workspaceRoot, allowWrite, shell };
         },
         async SetNetwork(n: NetworkView) {
           settings.network = n;
@@ -2283,6 +2433,7 @@ function makeMockApp(): AppBindings {
         mode: "normal",
         collaborationMode: "normal",
         toolApprovalMode: "ask",
+        tokenMode: "full",
         active: true,
         cwd: workspaceRoot,
       };
@@ -2308,6 +2459,7 @@ function makeMockApp(): AppBindings {
         mode: "normal",
         collaborationMode: "normal",
         toolApprovalMode: "ask",
+        tokenMode: "full",
         active: true,
         cwd: "",
       };
