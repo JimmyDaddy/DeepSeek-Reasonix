@@ -44,8 +44,8 @@ type ArgData struct {
 // (everything after the command word). It returns the suggestions filtered by
 // the token being typed and the byte offset where that token begins, so a caller
 // replaces just that token. Only structured commands participate (/mcp /model
-// /skills /hooks /subagents /effort /auto-plan /theme /language); others
-// yield nil. Single source of truth for CLI + desktop.
+// /skills /hooks /subagents /effort /auto-plan /reasoning-language /theme
+// /language); others yield nil. Single source of truth for CLI + desktop.
 func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	cmdEnd := strings.IndexAny(line, " \t")
 	if cmdEnd < 0 {
@@ -72,6 +72,8 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 		raw = effortArgItems(prior, d)
 	case "/auto-plan":
 		raw = autoPlanArgItems(prior)
+	case "/reasoning-language":
+		raw = reasoningLanguageArgItems(prior)
 	case "/theme":
 		raw = themeArgItems(prior)
 	case "/language":
@@ -89,6 +91,17 @@ func autoPlanArgItems(prior []string) []SlashItem {
 	return []SlashItem{
 		{Label: "off", Insert: "off", Hint: "manual plan mode only"},
 		{Label: "on", Insert: "on", Hint: "auto-enter plan mode for complex tasks"},
+	}
+}
+
+func reasoningLanguageArgItems(prior []string) []SlashItem {
+	if len(prior) > 1 {
+		return nil
+	}
+	return []SlashItem{
+		{Label: "auto", Insert: "auto", Hint: "follow conversation language"},
+		{Label: "zh", Insert: "zh", Hint: "prefer Chinese visible reasoning"},
+		{Label: "en", Insert: "en", Hint: "prefer English visible reasoning"},
 	}
 }
 

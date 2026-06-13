@@ -200,6 +200,9 @@ export interface AppBindings {
   AcceptMemorySuggestion(suggestion: MemorySuggestion): Promise<string>;
   AcceptSkillSuggestion(suggestion: SkillSuggestion): Promise<string>;
   MemoryForTab(tabID: string): Promise<MemoryView>;
+  MemorySuggestionsForTab(tabID: string): Promise<MemorySuggestionsView>;
+  AcceptMemorySuggestionForTab(tabID: string, suggestion: MemorySuggestion): Promise<string>;
+  AcceptSkillSuggestionForTab(tabID: string, suggestion: SkillSuggestion): Promise<string>;
   Remember(scope: string, note: string): Promise<string>;
   RememberForTab(tabID: string, scope: string, note: string): Promise<string>;
   Forget(name: string): Promise<void>;
@@ -250,6 +253,7 @@ export interface AppBindings {
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
   SetAgentParams(temperature: number, maxSteps: number, plannerMaxSteps: number, systemPrompt: string): Promise<void>;
   SetColdResumePrune(enabled: boolean): Promise<void>;
+  SetReasoningLanguage(lang: string): Promise<void>;
   SetTrayLocale(locale: "en" | "zh" | "zh-TW"): Promise<void>;
   // SetBypass is the legacy Wails name for YOLO/full-access tool auto-approval
   // (ask questions and plan approvals still wait; deny rules still apply).
@@ -698,7 +702,7 @@ function makeMockApp(): AppBindings {
       noProxy: "",
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
-    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent.", coldResumePrune: true },
+    agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 12, systemPrompt: "You are Reasonix, a coding agent.", coldResumePrune: true, reasoningLanguage: "auto" },
     bot: {
       enabled: !freshMock,
       model: "",
@@ -2141,6 +2145,15 @@ function makeMockApp(): AppBindings {
       emit({ kind: "notice", level: "info", text: `created suggested skill → ${suggestion.name}` });
       return `.reasonix/skills/${suggestion.name}/SKILL.md`;
     },
+    async MemorySuggestionsForTab(_tabID: string) {
+      return this.MemorySuggestions();
+    },
+    async AcceptMemorySuggestionForTab(_tabID: string, suggestion: MemorySuggestion) {
+      return this.AcceptMemorySuggestion(suggestion);
+    },
+    async AcceptSkillSuggestionForTab(_tabID: string, suggestion: SkillSuggestion) {
+      return this.AcceptSkillSuggestion(suggestion);
+    },
     async MemoryForTab(_tabID: string) {
       return this.Memory();
     },
@@ -2396,6 +2409,10 @@ function makeMockApp(): AppBindings {
     },
     async SetColdResumePrune(enabled: boolean) {
       settings.agent = { ...settings.agent, coldResumePrune: enabled };
+    },
+    async SetReasoningLanguage(lang: string) {
+      const normalized = lang === "zh" || lang === "en" ? lang : "auto";
+      settings.agent = { ...settings.agent, reasoningLanguage: normalized };
     },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {
